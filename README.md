@@ -10,23 +10,115 @@
 
 ---
 
-## Why
+## The problem
 
-CloudWatch log export for RDS is surprisingly expensive and surprisingly slow.
-If all you want is "put my Postgres/MySQL logs in S3 (or Kafka, or a webhook)",
-CloudWatch shouldn't be on the critical path.
+You run RDS. You want the Postgres / MySQL error, slow-query, and general
+logs somewhere durable — S3 for archive, Kafka for realtime, a webhook for
+your SIEM. AWS gives you exactly one path: **CloudWatch log export**.
 
-**rdstail** pulls from the RDS log API directly
-(`DescribeDBLogFiles` + `DownloadDBLogFilePortion`), checkpoints its progress
-locally, and fans out to the sinks you care about. One goroutine per RDS
-instance; one static binary to deploy.
+CloudWatch export is:
+
+- **Expensive** — you pay for ingestion + retention + export, even if all
+  you do downstream is move the data elsewhere.
+- **Slow** — tail latency is minutes, not seconds.
+- **Rigid** — no native path to Kafka, custom webhooks, or a bucket in a
+  different account without extra plumbing.
+- **One more moving part** — and it fails silently when IAM drifts.
+
+## The solution
+
+rdstail is a single static binary that calls the RDS log API directly
+(`DescribeDBLogFiles` + `DownloadDBLogFilePortion`), checkpoints progress
+locally, and fans out every record to the sinks you care about. No
+CloudWatch. One YAML file to configure. Crashes resume without re-shipping
+the world. That's it.
 
 Design priorities, in order:
 
 1. **Correctness** — at-least-once delivery, durable checkpoints, explicit
    failure modes. Never silently drop a log line.
-2. **Simplicity** — one YAML file, one binary, four commands. Boring on purpose.
+2. **Simplicity** — one YAML file, one binary, three commands.
 3. **Cost** — minimise AWS API calls; no always-on CloudWatch cost.
+
+---
+
+## Quick start (5 minutes)
+
+You need Go 1.22+ and AWS credentials with the permissions in [IAM](#iam).
+
+```bash
+# 1. Install
+go install github.com/avinash-gupta-rdz/rdstail/cmd/rdstail@latest
+
+# 2. Write the smallest possible config
+cat > rdstail.yaml <<'EOF'
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances: [my-db-1]
+
+sinks:
+  - name: s3-primary
+    type: s3
+    s3:
+      bucket: my-log-bucket
+      region: ap-south-1
+      prefix: rds/
+
+state:
+  type: sqlite
+  path: ./state.db
+
+runtime:
+  poll_interval: 10s
+  start_from: end
+EOF
+
+# 3. Validate (schema only — no network)
+rdstail validate -c rdstail.yaml
+
+# 4. Deep-validate (hits AWS — confirms creds + bucket + instance)
+rdstail validate -c rdstail.yaml --deep
+
+# 5. Run
+rdstail run -c rdstail.yaml
+```
+
+That's it. Logs start flowing into `s3://my-log-bucket/rds/`.
+
+Kill the process and re-run — checkpoints resume from where you left off,
+no replay explosion.
+
+### Quick start — Docker
+
+```bash
+# Build locally (no pushed image yet)
+docker build -f deploy/Dockerfile -t rdstail:dev .
+
+# Run with mounted config + persistent state
+docker run --rm \
+  -v $PWD/rdstail.yaml:/etc/rdstail/config.yaml:ro \
+  -v $PWD/state:/var/lib/rdstail \
+  -p 9090:9090 \
+  -e AWS_REGION=ap-south-1 \
+  -e AWS_ACCESS_KEY_ID=... \
+  -e AWS_SECRET_ACCESS_KEY=... \
+  rdstail:dev run -c /etc/rdstail/config.yaml
+```
+
+### Quick start — verify it's working
+
+```bash
+# Scrape metrics
+curl -s localhost:9090/metrics | grep '^rdstail_'
+
+# Structured JSON logs (pipe to jq)
+rdstail run -c rdstail.yaml 2>&1 | jq '{msg, instance, log_file, err}'
+
+# Inspect the checkpoint store
+sqlite3 ./state.db "SELECT instance_id, log_file, substr(marker,1,20), updated_at FROM checkpoints;"
+```
 
 ---
 
@@ -35,24 +127,22 @@ Design priorities, in order:
 - **Supported engines:** PostgreSQL, MySQL, MariaDB (Aurora variants work
   where the log-file naming matches RDS's).
 - **Sinks:** S3 (NDJSON + gzip), Kafka (franz-go, `acks=all`, idempotent),
-  HTTP webhook (JSON, optional gzip).
+  HTTP webhook (JSON, optional gzip). Fan out to all of them at once.
 - **State store:** SQLite by default (pure Go — no CGO, truly static binary);
   JSON-file fallback for dev.
 - **At-least-once with dedupe-friendly batch IDs** — every record carries a
   deterministic `BatchID = sha256(instance|logfile|prevMarker|nextMarker)[:16]`
-  so downstream consumers can dedupe for exactly-once semantics.
-- **Graceful rotation handling** — detects truncation (`size < prev`) and new
-  files; configurable `start_from: beginning | end`.
+  so downstream can dedupe for exactly-once semantics.
+- **Graceful rotation handling** — detects truncation and new files;
+  configurable `start_from: beginning | end`.
 - **DLQ** — terminal sink failures are parked in a `sinks_dlq` table instead
   of being dropped. Replay is a future `rdstail replay-dlq` command.
 - **Observability** — Prometheus metrics on `/metrics`, `/healthz`, `/readyz`,
   plus structured JSON logs.
 - **Multi-region, multi-account** — per-source `region` and optional
   `assume_role` ARN.
-- **Security** — IAM roles (IRSA supported), SSE-AES256 by default, SSE-KMS
-  when `kms_key_id` is set, TLS where the sink supports it.
-
----
+- **Security** — IAM roles (IRSA supported), SSE-AES256 default, SSE-KMS
+  when `kms_key_id` set, TLS where the sink supports it.
 
 ## Status
 
@@ -71,7 +161,7 @@ last box to tick before `v1.0.0`.
 go install github.com/avinash-gupta-rdz/rdstail/cmd/rdstail@latest
 ```
 
-The binary will be placed at `$GOBIN/rdstail` (or `$HOME/go/bin/rdstail`).
+The binary lands in `$GOBIN/rdstail` (or `$HOME/go/bin/rdstail`).
 
 ### From source
 
@@ -81,84 +171,11 @@ cd rdstail
 make build        # produces bin/rdstail
 ```
 
-### Docker
-
-```bash
-docker build -f deploy/Dockerfile -t rdstail:dev .
-docker run --rm \
-  -v $PWD/examples:/etc/rdstail \
-  -v $PWD/state:/var/lib/rdstail \
-  -p 9090:9090 \
-  rdstail:dev run -c /etc/rdstail/config.yaml
-```
-
 ### Pre-built releases
 
-GoReleaser config is included (`.goreleaser.yml`) — cut a tag and
-`goreleaser release` produces signed archives for `linux/amd64`, `linux/arm64`,
-`darwin/amd64`, `darwin/arm64`.
-
----
-
-## Quick start
-
-1. **Write a config** (see `examples/` for four starting points):
-
-   ```yaml
-   # examples/s3-only.yaml
-   sources:
-     - type: rds
-       engine: postgres
-       region: ap-south-1
-       instances: [prod-pg-writer, prod-pg-reader-1]
-
-   sinks:
-     - name: s3-primary
-       type: s3
-       s3:
-         bucket: company-rds-logs
-         region: ap-south-1
-         prefix: rds/
-
-   state:
-     type: sqlite
-     path: /var/lib/rdstail/state.db
-
-   runtime:
-     poll_interval: 15s
-     max_workers: 4
-     start_from: end
-
-   metrics:
-     enabled: true
-     listen: :9090
-   ```
-
-2. **Validate** (schema only, no network):
-
-   ```bash
-   rdstail validate -c config.yaml
-   ```
-
-3. **Deep-validate** (optional; hits STS + RDS + S3 + HTTP):
-
-   ```bash
-   rdstail validate -c config.yaml --deep
-   ```
-
-4. **Run**:
-
-   ```bash
-   rdstail run -c config.yaml
-   ```
-
-5. **Scrape metrics**:
-
-   ```bash
-   curl -s localhost:9090/metrics | grep rdstail_
-   ```
-
-That's it. Kill the process and re-run: checkpoints resume, no replay explosion.
+GoReleaser config is included (`.goreleaser.yml`) — tagging a release and
+running `goreleaser release` produces archives for `linux/amd64`,
+`linux/arm64`, `darwin/amd64`, `darwin/arm64`.
 
 ---
 
@@ -189,7 +206,7 @@ See `examples/` for a per-topology catalogue:
 | `examples/http-webhook.yaml` | Single instance → webhook with gzip. |
 | `examples/fanout.yaml` | Every record written to both S3 **and** Kafka. |
 
-### Config reference
+### Full config reference
 
 ```yaml
 sources:                       # required; ≥ 1
@@ -263,7 +280,7 @@ double-underscore for nesting:
 ```bash
 RDSTAIL_RUNTIME__POLL_INTERVAL=5s \
 RDSTAIL_LOGGING__LEVEL=debug \
-  rdstail run -c config.yaml
+  rdstail run -c rdstail.yaml
 ```
 
 ---
@@ -345,7 +362,7 @@ Single-line JSON (`slog`) with a consistent context: `instance`, `engine`,
 `log_file` where applicable. Pipe through `jq`:
 
 ```bash
-rdstail run -c config.yaml 2>&1 | jq '{lvl: .level, msg, instance, log_file, err}'
+rdstail run -c rdstail.yaml 2>&1 | jq '{lvl: .level, msg, instance, log_file, err}'
 ```
 
 ### Health endpoints
@@ -434,8 +451,8 @@ reading the same RDS instance will duplicate work).
 
 ### Capacity planning
 
-A single rdstail instance comfortably handles ~100 RDS instances polled every
-10 s. Per-instance cost in AWS API calls is roughly
+A single rdstail instance comfortably handles ~100 RDS instances polled
+every 10 s. Per-instance cost in AWS API calls is roughly
 `ceil(new_log_bytes / 1 MB)` + 1 describe per poll. Set `max_workers` to
 saturate your sink throughput — the default of 5 is fine for S3/webhook;
 bump to 16+ for Kafka if you have the brokers to absorb it.
@@ -455,7 +472,7 @@ make e2e                  # anything tagged //go:build e2e
 Project tree:
 
 ```
-cmd/rdstail/      CLI entrypoint
+cmd/rdstail/              CLI entrypoint
 internal/app              runtime orchestrator
 internal/cli              cobra command tree
 internal/config           YAML schema, defaults, static validation
