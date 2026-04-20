@@ -1,0 +1,36 @@
+# Kafka-only config: mysql fleet → Kafka topic template.
+sources:
+  - type: rds
+    engine: mysql
+    region: us-east-1
+    instances:
+      - prod-mysql-1
+      - prod-mysql-2
+
+sinks:
+  - name: kafka-platform
+    type: kafka
+    kafka:
+      brokers:
+        - kafka-1.internal:9092
+        - kafka-2.internal:9092
+        - kafka-3.internal:9092
+      # Either use an explicit topic...
+      # topic: rds-logs
+      # ...or a template with {engine}/{instance} substitutions:
+      topic_template: rds-logs-{engine}
+      client_id: rdstail
+
+state:
+  type: sqlite
+  path: /var/lib/rdstail/state.db
+
+runtime:
+  poll_interval: 10s
+  max_workers: 8
+  shutdown_timeout: 30s
+  start_from: end
+
+metrics:
+  enabled: true
+  listen: :9090

@@ -1,0 +1,50 @@
+version: 2
+
+project_name: rdstail
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rdstail
+    main: ./cmd/rdstail
+    binary: rdstail
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/avinash-gupta-rdz/rdstail/internal/cli.version={{.Version}}
+      - -X github.com/avinash-gupta-rdz/rdstail/internal/cli.commit={{.Commit}}
+      - -X github.com/avinash-gupta-rdz/rdstail/internal/cli.buildDate={{.Date}}
+    goos:   [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+      - docs/**/*
+      - examples/**/*
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  draft: true

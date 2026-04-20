@@ -1,0 +1,32 @@
+# Minimal S3-only config: one postgres fleet → one S3 sink.
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances:
+      - prod-pg-writer
+      - prod-pg-reader-1
+
+sinks:
+  - name: s3-primary
+    type: s3
+    s3:
+      bucket: company-rds-logs
+      region: ap-south-1
+      prefix: rds/
+      # Uncomment to require SSE-KMS instead of SSE-S3:
+      # kms_key_id: arn:aws:kms:ap-south-1:123456789012:key/abc-def
+
+state:
+  type: sqlite
+  path: /var/lib/rdstail/state.db
+
+runtime:
+  poll_interval: 15s
+  max_workers: 4
+  shutdown_timeout: 30s
+  start_from: end
+
+metrics:
+  enabled: true
+  listen: :9090

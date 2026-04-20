@@ -1,0 +1,41 @@
+# Fanout config: every record is written to BOTH S3 and Kafka. This is the
+# current default routing semantic — there is no per-sink filtering in v1.
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances: [prod-pg-writer]
+
+  - type: rds
+    engine: mysql
+    region: ap-south-1
+    instances: [prod-mysql-1]
+
+sinks:
+  - name: s3-cold
+    type: s3
+    s3:
+      bucket: company-rds-logs
+      region: ap-south-1
+      prefix: rds/
+
+  - name: kafka-hot
+    type: kafka
+    kafka:
+      brokers: [kafka-1.internal:9092]
+      topic_template: rds-logs-{engine}
+
+state:
+  type: sqlite
+  path: /var/lib/rdstail/state.db
+
+runtime:
+  poll_interval: 10s
+  max_workers: 6
+  max_instances_concurrent: 2
+  shutdown_timeout: 30s
+  start_from: end
+
+metrics:
+  enabled: true
+  listen: :9090

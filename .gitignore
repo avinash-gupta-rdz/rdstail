@@ -1,0 +1,12 @@
+bin/
+dist/
+coverage.out
+coverage.html
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+state.db*
+.env
+.idea/
+.vscode/
