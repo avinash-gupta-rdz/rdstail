@@ -11,13 +11,15 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	LogsProcessedTotal     *prometheus.CounterVec
-	LogsFailedTotal        *prometheus.CounterVec
-	IngestionLagSeconds    *prometheus.GaugeVec
-	APICallsTotal          *prometheus.CounterVec
-	BatchBytes             *prometheus.HistogramVec
-	SinkWriteDurationSec   *prometheus.HistogramVec
-	StateStoreOpsTotal     *prometheus.CounterVec
+	LogsProcessedTotal   *prometheus.CounterVec
+	LogsFailedTotal      *prometheus.CounterVec
+	IngestionLagSeconds  *prometheus.GaugeVec
+	APICallsTotal        *prometheus.CounterVec
+	PollIntervalSeconds  *prometheus.GaugeVec
+	BatchBytes           *prometheus.HistogramVec
+	SinkWriteDurationSec *prometheus.HistogramVec
+	StateStoreOpsTotal   *prometheus.CounterVec
+	DLQDepth             *prometheus.GaugeVec
 }
 
 // New builds a fresh Metrics with all collectors registered on a private Registry.
@@ -45,6 +47,11 @@ func New() *Metrics {
 		Help: "AWS API calls, labelled by operation and outcome (ok|error|throttled).",
 	}, []string{"operation", "outcome"})
 
+	m.PollIntervalSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rdstail_poll_interval_seconds",
+		Help: "Current per-instance poll interval. Rises during idle backoff (adaptive polling), snaps back to base when data flows.",
+	}, []string{"instance"})
+
 	m.BatchBytes = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "rdstail_batch_bytes",
 		Help:    "Serialised batch size per sink write (bytes).",
@@ -62,14 +69,21 @@ func New() *Metrics {
 		Help: "State store operations, labelled by op and outcome.",
 	}, []string{"op", "outcome"})
 
+	m.DLQDepth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rdstail_dlq_depth",
+		Help: "Dead-lettered batches currently parked, per sink. Nonzero means data is waiting for `rdstail dlq replay` — alert on growth.",
+	}, []string{"sink_name"})
+
 	r.MustRegister(
 		m.LogsProcessedTotal,
 		m.LogsFailedTotal,
 		m.IngestionLagSeconds,
 		m.APICallsTotal,
+		m.PollIntervalSeconds,
 		m.BatchBytes,
 		m.SinkWriteDurationSec,
 		m.StateStoreOpsTotal,
+		m.DLQDepth,
 	)
 	return m
 }

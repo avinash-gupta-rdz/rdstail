@@ -16,12 +16,14 @@ import (
 	httpsink "github.com/avinash-gupta-rdz/rdstail/internal/sink/http"
 	kafkasink "github.com/avinash-gupta-rdz/rdstail/internal/sink/kafka"
 	s3sink "github.com/avinash-gupta-rdz/rdstail/internal/sink/s3"
+	stdoutsink "github.com/avinash-gupta-rdz/rdstail/internal/sink/stdout"
 	"github.com/avinash-gupta-rdz/rdstail/internal/state"
 )
 
 // BuildAll instantiates all configured sinks. Decorator order, innermost-first:
-// metrics → retry → DLQ (so retries count in metrics, and DLQ only sees
-// post-retry terminal failures).
+// metrics → retry → DLQ → filter (so retries count in metrics, DLQ only sees
+// post-retry terminal failures, and filtered-out records never touch any of
+// them — a fully-filtered batch ACKs without a write).
 //
 // Either probe or dlq may be nil — the corresponding decorator is skipped.
 // Caller owns Close() on every returned sink.
@@ -44,9 +46,22 @@ func BuildAll(ctx context.Context, cfg *config.Config, dlq state.DLQ, probe sink
 			Multiplier:  cfgSink.Retry.Multiplier,
 		})
 		wrapped = sink.WithDLQ(wrapped, dlq)
+		if cfgSink.Filter != nil {
+			wrapped = sink.WithFilter(wrapped, sink.FilterConfig{
+				MinSeverity: cfgSink.Filter.MinSeverity,
+				Severities:  cfgSink.Filter.Severities,
+			})
+		}
 		out = append(out, wrapped)
 	}
 	return out, nil
+}
+
+// Build constructs a single bare sink (no decorators) from its config entry.
+// Used by DLQ replay, which applies its own retry wrapping and must NOT
+// re-attach the DLQ decorator (a failed replay would loop back into the queue).
+func Build(ctx context.Context, cfgSink *config.Sink) (sink.Sink, error) {
+	return buildOne(ctx, cfgSink)
 }
 
 func buildOne(ctx context.Context, cfgSink *config.Sink) (sink.Sink, error) {
@@ -59,7 +74,11 @@ func buildOne(ctx context.Context, cfgSink *config.Sink) (sink.Sink, error) {
 		if region == "" {
 			region = "us-east-1"
 		}
-		awsCfg, err := awsx.NewConfig(ctx, awsx.Options{Region: region})
+		awsCfg, err := awsx.NewConfig(ctx, awsx.Options{
+			Region:     region,
+			AssumeRole: cfgSink.S3.AssumeRole,
+			ExternalID: cfgSink.S3.ExternalID,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("sink %q: aws config: %w", cfgSink.Name, err)
 		}
@@ -71,6 +90,13 @@ func buildOne(ctx context.Context, cfgSink *config.Sink) (sink.Sink, error) {
 
 	case config.SinkTypeKafka:
 		return kafkasink.New(kafkasink.Opts{Name: cfgSink.Name, Cfg: cfgSink.Kafka})
+
+	case config.SinkTypeStdout:
+		format := ""
+		if cfgSink.Stdout != nil {
+			format = cfgSink.Stdout.Format
+		}
+		return stdoutsink.New(cfgSink.Name, format, nil)
 
 	default:
 		return nil, fmt.Errorf("sink %q: unsupported type %q", cfgSink.Name, cfgSink.Type)

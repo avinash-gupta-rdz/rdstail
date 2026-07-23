@@ -13,10 +13,10 @@ import (
 
 // Server exposes /metrics, /healthz, /readyz.
 type Server struct {
-	addr   string
-	srv    *http.Server
-	log    *slog.Logger
-	ready  atomic.Bool
+	addr  string
+	srv   *http.Server
+	log   *slog.Logger
+	ready atomic.Bool
 }
 
 // NewServer wires an http.Server over the given Metrics registry.

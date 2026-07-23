@@ -14,13 +14,13 @@ import (
 // return nil after the batch has been durably accepted (S3 2xx, Kafka acks=all,
 // HTTP 2xx, etc.) — the pipeline advances its checkpoint based on this.
 //
-// Implementations SHOULD be safe for concurrent Write calls; the pipeline's
-// KeyedRunner serialises writes per (instance, logfile) but different keys
-// may dispatch concurrently.
+// Implementations MUST be safe for concurrent Write calls: with
+// runtime.max_workers > 1 the pipeline drains different log files
+// concurrently. Writes for a single (instance, logfile) are always serial.
 type Sink interface {
 	// Name is the operator-assigned sink name (unique per config).
 	Name() string
-	// Type is one of "s3", "kafka", "http", "memory".
+	// Type is one of "s3", "kafka", "http", "stdout", "memory".
 	Type() string
 	// Write delivers the batch. Returning nil means the batch is durable.
 	Write(ctx context.Context, records []logrecord.LogRecord) error

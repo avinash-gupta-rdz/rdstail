@@ -5,12 +5,15 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl/plain"
+	"github.com/twmb/franz-go/pkg/sasl/scram"
 
 	"github.com/avinash-gupta-rdz/rdstail/internal/config"
 	"github.com/avinash-gupta-rdz/rdstail/pkg/logrecord"
@@ -51,14 +54,14 @@ func New(opts Opts) (*Sink, error) {
 	}
 	p := opts.Producer
 	if p == nil {
-		clientOpts := []kgo.Opt{
-			kgo.SeedBrokers(opts.Cfg.Brokers...),
+		clientOpts, err := ClientOpts(opts.Cfg)
+		if err != nil {
+			return nil, fmt.Errorf("kafka sink %q: %w", opts.Name, err)
+		}
+		clientOpts = append(clientOpts,
 			kgo.RequiredAcks(kgo.AllISRAcks()),
 			kgo.ProducerBatchCompression(kgo.ZstdCompression(), kgo.SnappyCompression()),
-		}
-		if opts.Cfg.ClientID != "" {
-			clientOpts = append(clientOpts, kgo.ClientID(opts.Cfg.ClientID))
-		}
+		)
 		client, err := kgo.NewClient(clientOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("kafka sink %q client: %w", opts.Name, err)
@@ -71,6 +74,38 @@ func New(opts Opts) (*Sink, error) {
 		topicTemplate: opts.Cfg.TopicTemplate,
 		producer:      p,
 	}, nil
+}
+
+// ClientOpts builds the connection-level franz-go options (brokers, client id,
+// TLS, SASL) shared by the producer and the `validate --deep` probe. Producer
+// concerns (acks, compression) are NOT included — append those separately.
+func ClientOpts(cfg *config.KafkaSink) ([]kgo.Opt, error) {
+	out := []kgo.Opt{kgo.SeedBrokers(cfg.Brokers...)}
+	if cfg.ClientID != "" {
+		out = append(out, kgo.ClientID(cfg.ClientID))
+	}
+	if cfg.TLS {
+		out = append(out, kgo.DialTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	}
+	if cfg.SASLUsername != "" {
+		switch cfg.SASLMechanism {
+		case "", "plain":
+			out = append(out, kgo.SASL(plain.Auth{
+				User: cfg.SASLUsername, Pass: cfg.SASLPassword,
+			}.AsMechanism()))
+		case "scram-sha-256":
+			out = append(out, kgo.SASL(scram.Auth{
+				User: cfg.SASLUsername, Pass: cfg.SASLPassword,
+			}.AsSha256Mechanism()))
+		case "scram-sha-512":
+			out = append(out, kgo.SASL(scram.Auth{
+				User: cfg.SASLUsername, Pass: cfg.SASLPassword,
+			}.AsSha512Mechanism()))
+		default:
+			return nil, fmt.Errorf("unsupported sasl_mechanism %q", cfg.SASLMechanism)
+		}
+	}
+	return out, nil
 }
 
 // Name implements sink.Sink.

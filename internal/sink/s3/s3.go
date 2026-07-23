@@ -43,10 +43,10 @@ type Sink struct {
 
 // Opts configure New.
 type Opts struct {
-	Name   string
-	Cfg    *config.S3Sink
-	API    S3API
-	Clock  func() time.Time // optional, defaults to time.Now
+	Name  string
+	Cfg   *config.S3Sink
+	API   S3API
+	Clock func() time.Time // optional, defaults to time.Now
 }
 
 // New constructs an S3 Sink.

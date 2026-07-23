@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsrds "github.com/aws/aws-sdk-go-v2/service/rds"
 
+	"github.com/avinash-gupta-rdz/rdstail/internal/parse"
 	"github.com/avinash-gupta-rdz/rdstail/pkg/logrecord"
 )
 
@@ -57,6 +58,7 @@ type Fetcher struct {
 	instanceID string
 	engine     string
 	classifier LogFileClassifier
+	parser     parse.Parser // nil → no metadata extraction
 	clock      func() time.Time
 	observe    APICallObserver
 }
@@ -87,6 +89,7 @@ func NewFetcher(opts FetcherOpts) (*Fetcher, error) {
 		instanceID: opts.InstanceID,
 		engine:     opts.Engine,
 		classifier: NewClassifier(opts.Engine),
+		parser:     parse.ForEngine(opts.Engine),
 		clock:      clock,
 		observe:    opts.Observer,
 	}, nil
@@ -212,8 +215,11 @@ func (f *Fetcher) SkipToEnd(ctx context.Context, logFile string) (string, error)
 }
 
 // parseRecords splits the raw log payload on newlines and wraps each non-empty
-// line as a LogRecord. Timestamp is the fetch time — RDS returns raw log lines
-// whose internal timestamps vary by engine; per PRD we do not parse them.
+// line as a LogRecord. When the engine parser recognises a line, Timestamp is
+// the server-side event time and Severity its level token; lines without a
+// timestamp (continuations, stack traces) inherit the nearest preceding
+// timestamped line's time within the chunk. Everything else falls back to
+// fetch time. The raw line is preserved verbatim in Message.
 func (f *Fetcher) parseRecords(logFile, data string) []logrecord.LogRecord {
 	if data == "" {
 		return nil
@@ -221,17 +227,30 @@ func (f *Fetcher) parseRecords(logFile, data string) []logrecord.LogRecord {
 	now := f.clock().UTC()
 	lines := strings.Split(data, "\n")
 	out := make([]logrecord.LogRecord, 0, len(lines))
+	var lastTS time.Time
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		out = append(out, logrecord.LogRecord{
+		rec := logrecord.LogRecord{
 			InstanceID: f.instanceID,
 			Engine:     f.engine,
 			LogFile:    logFile,
 			Timestamp:  now,
 			Message:    line,
-		})
+		}
+		if f.parser != nil {
+			meta := f.parser.Parse(line)
+			rec.Severity = meta.Severity
+			switch {
+			case !meta.Timestamp.IsZero():
+				rec.Timestamp = meta.Timestamp
+				lastTS = meta.Timestamp
+			case !lastTS.IsZero():
+				rec.Timestamp = lastTS
+			}
+		}
+		out = append(out, rec)
 	}
 	return out
 }

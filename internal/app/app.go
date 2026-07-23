@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	awsrds "github.com/aws/aws-sdk-go-v2/service/rds"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/avinash-gupta-rdz/rdstail/internal/pipeline"
 	"github.com/avinash-gupta-rdz/rdstail/internal/sink"
 	sinkfactory "github.com/avinash-gupta-rdz/rdstail/internal/sink/factory"
+	rdssrc "github.com/avinash-gupta-rdz/rdstail/internal/source/rds"
 	"github.com/avinash-gupta-rdz/rdstail/internal/state"
 
 	// side-effect registrations
@@ -83,6 +86,43 @@ func Run(ctx context.Context, cfg *config.Config, lg *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build sinks: %w", err)
 	}
+
+	// Automatic checkpoint GC: prune rows for files not seen in
+	// checkpoint_retention (rotated out, departed instances). Sweeps every 6h.
+	if gc, ok := store.(state.GCer); ok && cfg.Runtime.CheckpointRetention > 0 {
+		retention := cfg.Runtime.CheckpointRetention
+		go func() {
+			sweep := func() {
+				n, err := gc.GCCheckpoints(ctx, time.Now().Add(-retention), false)
+				switch {
+				case err != nil && ctx.Err() == nil:
+					lg.Warn("checkpoint gc failed", "err", err)
+				case n > 0:
+					lg.Info("checkpoint gc pruned stale rows", "count", n, "retention", retention.String())
+				}
+			}
+			sweep()
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sweep()
+				}
+			}
+		}()
+	}
+
+	// Export per-sink DLQ depth so operators can alert on parked batches.
+	if counter, ok := dlq.(metrics.DLQCounter); ok && cfg.Metrics.Enabled {
+		names := make([]string, 0, len(cfg.Sinks))
+		for i := range cfg.Sinks {
+			names = append(names, cfg.Sinks[i].Name)
+		}
+		go metrics.WatchDLQDepth(ctx, counter, names, mx.DLQDepth, 30*time.Second, lg)
+	}
 	defer func() {
 		for _, s := range sinks {
 			if err := s.Close(); err != nil {
@@ -98,18 +138,39 @@ func Run(ctx context.Context, cfg *config.Config, lg *slog.Logger) error {
 		outSink = sink.NewFanout(sinks...)
 	}
 
-	instances, err := buildInstanceSpecs(ctx, cfg)
+	resolver := newSpecResolver(cfg, lg)
+	instances, err := resolver.Resolve(ctx)
 	if err != nil {
 		return fmt.Errorf("build instances: %w", err)
+	}
+
+	// Periodic re-discovery: if any discover block sets refresh_interval, the
+	// scheduler reconciles the worker set on the smallest configured cadence.
+	var refresh func(context.Context) ([]pipeline.InstanceSpec, error)
+	var refreshInterval time.Duration
+	for _, src := range cfg.Sources {
+		if src.Discover == nil || src.Discover.RefreshInterval <= 0 {
+			continue
+		}
+		if refreshInterval == 0 || src.Discover.RefreshInterval < refreshInterval {
+			refreshInterval = src.Discover.RefreshInterval
+		}
+	}
+	if refreshInterval > 0 {
+		refresh = resolver.Resolve
+		lg.Info("periodic re-discovery enabled", "interval", refreshInterval.String())
 	}
 
 	sched, err := pipeline.NewScheduler(pipeline.SchedulerOpts{
 		Config:          cfg,
 		Instances:       instances,
+		Refresh:         refresh,
+		RefreshInterval: refreshInterval,
 		Store:           store,
 		Sink:            outSink,
 		Logger:          lg,
 		LagGauge:        mx.IngestionLagSeconds,
+		PollGauge:       mx.PollIntervalSeconds,
 		StateOpsCounter: mx.StateStoreOpsTotal,
 		APICallsCounter: mx.APICallsTotal,
 	})
@@ -131,39 +192,108 @@ func Run(ctx context.Context, cfg *config.Config, lg *slog.Logger) error {
 	return nil
 }
 
-// buildInstanceSpecs resolves one *awsrds.Client per (region, assume_role) tuple
-// and produces one InstanceSpec per configured instance. Clients are shared
-// across instances in the same region for efficiency.
-func buildInstanceSpecs(ctx context.Context, cfg *config.Config) ([]pipeline.InstanceSpec, error) {
-	type clientKey struct {
-		region     string
-		assumeRole string
-	}
-	clients := map[clientKey]*awsrds.Client{}
+// maxInstances mirrors the config-layer default cap; discovery can push the
+// total past what static validation could see, so it is re-checked here.
+const maxInstances = 500
 
+// specResolver turns the config's sources into InstanceSpecs — explicit
+// entries plus tag-discovered ones, deduplicated by (region, instance ID).
+// Resolve is safe to call repeatedly (periodic re-discovery); AWS clients are
+// built once per (region, assume_role) and cached across calls.
+type specResolver struct {
+	cfg *config.Config
+	lg  *slog.Logger
+
+	mu      sync.Mutex
+	clients map[clientKey]*awsrds.Client
+	known   map[string]bool // (region|instance) keys already logged as discovered
+}
+
+type clientKey struct {
+	region     string
+	assumeRole string
+}
+
+func newSpecResolver(cfg *config.Config, lg *slog.Logger) *specResolver {
+	return &specResolver{cfg: cfg, lg: lg, clients: map[clientKey]*awsrds.Client{}, known: map[string]bool{}}
+}
+
+func (r *specResolver) client(ctx context.Context, region, assumeRole string) (*awsrds.Client, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := clientKey{region: region, assumeRole: assumeRole}
+	if c, ok := r.clients[key]; ok {
+		return c, nil
+	}
+	awsCfg, err := awsx.NewConfig(ctx, awsx.Options{Region: region, AssumeRole: assumeRole})
+	if err != nil {
+		return nil, fmt.Errorf("aws config for %s: %w", region, err)
+	}
+	c := awsrds.NewFromConfig(awsCfg)
+	r.clients[key] = c
+	return c, nil
+}
+
+// Resolve returns the current desired instance set.
+func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, error) {
+	seen := map[string]bool{}
 	var out []pipeline.InstanceSpec
-	for _, src := range cfg.Sources {
+	add := func(spec pipeline.InstanceSpec) {
+		k := spec.Region + "|" + spec.InstanceID
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, spec)
+	}
+
+	for _, src := range r.cfg.Sources {
 		if src.Type != config.SourceTypeRDS {
 			return nil, fmt.Errorf("unsupported source type %q", src.Type)
 		}
-		key := clientKey{region: src.Region, assumeRole: src.AssumeRole}
-		client, ok := clients[key]
-		if !ok {
-			awsCfg, err := awsx.NewConfig(ctx, awsx.Options{Region: src.Region, AssumeRole: src.AssumeRole})
-			if err != nil {
-				return nil, fmt.Errorf("aws config for %s: %w", src.Region, err)
-			}
-			client = awsrds.NewFromConfig(awsCfg)
-			clients[key] = client
+		client, err := r.client(ctx, src.Region, src.AssumeRole)
+		if err != nil {
+			return nil, err
 		}
 		for _, inst := range src.Instances {
-			out = append(out, pipeline.InstanceSpec{
+			add(pipeline.InstanceSpec{
 				InstanceID: inst,
 				Engine:     src.Engine,
 				Region:     src.Region,
 				API:        client,
 			})
 		}
+		if src.Discover != nil {
+			found, err := rdssrc.DiscoverInstances(ctx, client, rdssrc.DiscoverFilter{
+				Tags:   src.Discover.Tags,
+				Engine: src.Engine,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("discover instances in %s: %w", src.Region, err)
+			}
+			if len(found) == 0 {
+				r.lg.Warn("discovery matched no instances", "region", src.Region, "tags", src.Discover.Tags)
+			}
+			for _, d := range found {
+				k := src.Region + "|" + d.ID
+				r.mu.Lock()
+				first := !r.known[k]
+				r.known[k] = true
+				r.mu.Unlock()
+				if first {
+					r.lg.Info("discovered instance", "instance", d.ID, "engine", d.Engine, "status", d.Status, "region", src.Region)
+				}
+				add(pipeline.InstanceSpec{
+					InstanceID: d.ID,
+					Engine:     d.Engine,
+					Region:     src.Region,
+					API:        client,
+				})
+			}
+		}
+	}
+	if len(out) > maxInstances {
+		return nil, fmt.Errorf("%d instances after discovery exceeds the %d-instance cap (split into multiple rdstail deployments)", len(out), maxInstances)
 	}
 	return out, nil
 }

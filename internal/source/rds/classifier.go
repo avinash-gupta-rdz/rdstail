@@ -73,5 +73,5 @@ func (mysqlClassifier) FilenameContains() string { return "" } // multi-prefix; 
 // configs can experiment.
 type allClassifier struct{}
 
-func (allClassifier) Accepts(string) bool    { return true }
+func (allClassifier) Accepts(string) bool      { return true }
 func (allClassifier) FilenameContains() string { return "" }

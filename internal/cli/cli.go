@@ -40,6 +40,10 @@ func New() *cobra.Command {
 
 	root.AddCommand(newRunCmd(&configPath, &logLevel))
 	root.AddCommand(newValidateCmd(&configPath, &logLevel))
+	root.AddCommand(newDLQCmd(&configPath, &logLevel))
+	root.AddCommand(newDiscoverCmd(&configPath, &logLevel))
+	root.AddCommand(newTailCmd(&logLevel))
+	root.AddCommand(newStateCmd(&configPath, &logLevel))
 	root.AddCommand(newVersionCmd())
 	return root
 }
@@ -132,4 +136,3 @@ func loadAndInstall(path, level string) (*config.Config, *slog.Logger, error) {
 	logging.InstallDefault(lg)
 	return cfg, lg, nil
 }
-

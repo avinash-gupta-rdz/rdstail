@@ -73,8 +73,11 @@ func TestValidate_CatchesAllErrors(t *testing.T) {
 			{Name: "a", Type: "http", HTTP: &HTTPSink{URL: "ftp://nope"}},
 			{Name: "", Type: "kafka", Kafka: &KafkaSink{}},
 		},
-		State:   State{Type: "redis", Path: ""},
-		Runtime: Runtime{PollInterval: 500 * time.Millisecond, MaxWorkers: 0, StartFrom: "middle"},
+		State: State{Type: "redis", Path: ""},
+		Runtime: Runtime{
+			PollInterval: 500 * time.Millisecond, MaxWorkers: 0, StartFrom: "middle",
+			PollIntervalMax: 100 * time.Millisecond, PollBackoffMultiplier: 0.5,
+		},
 	}
 	err := Validate(cfg)
 	if err == nil {
@@ -88,6 +91,8 @@ func TestValidate_CatchesAllErrors(t *testing.T) {
 		"http.url",
 		"kafka.brokers",
 		"poll_interval",
+		"poll_interval_max",
+		"poll_backoff_multiplier",
 		"max_workers",
 		"start_from",
 		"state.type",
@@ -115,5 +120,66 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.Runtime.PollInterval != 25*time.Second {
 		t.Fatalf("expected env override to 25s, got %s", cfg.Runtime.PollInterval)
+	}
+}
+
+func TestValidate_DiscoverSources(t *testing.T) {
+	base := func() *Config {
+		c := defaults()
+		c.Sinks = []Sink{{Name: "s", Type: "http", HTTP: &HTTPSink{URL: "https://x.example/ingest"}}}
+		return c
+	}
+
+	// Discover-only source: engine optional.
+	c := base()
+	c.Sources = []Source{{Type: "rds", Region: "ap-south-1",
+		Discover: &Discover{Tags: map[string]string{"rdstail": "true"}}}}
+	if err := Validate(c); err != nil {
+		t.Fatalf("discover-only source should validate, got: %v", err)
+	}
+
+	// Discover with empty tags: rejected.
+	c = base()
+	c.Sources = []Source{{Type: "rds", Region: "ap-south-1", Discover: &Discover{}}}
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "discover.tags") {
+		t.Fatalf("expected discover.tags error, got: %v", err)
+	}
+
+	// Explicit instances still require an engine.
+	c = base()
+	c.Sources = []Source{{Type: "rds", Region: "ap-south-1", Instances: []string{"db-1"},
+		Discover: &Discover{Tags: map[string]string{"a": "b"}}}}
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "engine") {
+		t.Fatalf("expected engine error for explicit instances, got: %v", err)
+	}
+}
+
+func TestLoad_S3SinkAssumeRole(t *testing.T) {
+	p := writeTemp(t, `
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances: [db-1]
+sinks:
+  - name: central-archive
+    type: s3
+    s3:
+      bucket: org-logs
+      region: us-east-1
+      assume_role: arn:aws:iam::999999999999:role/log-writer
+      external_id: rdstail-prod
+state: {type: sqlite, path: ./s.db}
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	s3 := cfg.Sinks[0].S3
+	if s3.AssumeRole != "arn:aws:iam::999999999999:role/log-writer" || s3.ExternalID != "rdstail-prod" {
+		t.Fatalf("assume_role/external_id not loaded: %+v", s3)
 	}
 }

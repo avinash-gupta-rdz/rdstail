@@ -30,10 +30,10 @@ type Store struct {
 }
 
 type entry struct {
-	Marker       string `json:"marker"`
-	BytesWritten int64  `json:"bytes_written"`
-	FileSize     int64  `json:"file_size"`
-	LastWrittenMS int64 `json:"last_written_ms"`
+	Marker        string `json:"marker"`
+	BytesWritten  int64  `json:"bytes_written"`
+	FileSize      int64  `json:"file_size"`
+	LastWrittenMS int64  `json:"last_written_ms"`
 }
 
 type fileData struct {

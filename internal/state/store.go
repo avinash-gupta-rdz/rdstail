@@ -65,12 +65,32 @@ type DLQItem struct {
 	CreatedAt time.Time
 }
 
+// DLQQuery filters and pages a DLQList call. The zero value lists everything
+// from the beginning with the backend's default page size.
+type DLQQuery struct {
+	SinkName string // "" == all sinks
+	AfterID  int64  // pagination cursor: only rows with ID > AfterID
+	Limit    int    // <= 0 → backend default (100)
+}
+
 // DLQ is an optional capability implemented by stores that persist dead-letter
 // records. Callers should type-assert — not every backend implements it.
 type DLQ interface {
 	DLQPut(ctx context.Context, sinkName, batchID string, payload []byte, reason string) error
-	DLQList(ctx context.Context, limit int) ([]DLQItem, error)
+	// DLQList returns items matching q, oldest-first (ascending ID).
+	DLQList(ctx context.Context, q DLQQuery) ([]DLQItem, error)
 	DLQDelete(ctx context.Context, id int64) error
+	// DLQCount returns the number of parked items for sinkName ("" == all).
+	DLQCount(ctx context.Context, sinkName string) (int64, error)
+	// DLQPurge deletes all items for sinkName ("" == all) and returns the count.
+	DLQPurge(ctx context.Context, sinkName string) (int64, error)
+}
+
+// GCer is an optional capability: stores that track per-row update times can
+// prune checkpoints untouched since olderThan (rotated-out log files leave
+// rows behind forever otherwise). dryRun reports the count without deleting.
+type GCer interface {
+	GCCheckpoints(ctx context.Context, olderThan time.Time, dryRun bool) (int64, error)
 }
 
 // Config selects and parameterises the concrete backend.

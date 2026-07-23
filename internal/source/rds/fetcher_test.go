@@ -186,9 +186,9 @@ func TestPullPortion_EmptyMarkerNormalisedToZero(t *testing.T) {
 func TestSkipToEnd_LoopsUntilNoPending(t *testing.T) {
 	m := &mockAPI{
 		downloadResponses: map[string]*awsrds.DownloadDBLogFilePortionOutput{
-			"f|0":   {Marker: aws.String("m1"), AdditionalDataPending: aws.Bool(true)},
-			"f|m1":  {Marker: aws.String("m2"), AdditionalDataPending: aws.Bool(true)},
-			"f|m2":  {Marker: aws.String("tail"), AdditionalDataPending: aws.Bool(false)},
+			"f|0":  {Marker: aws.String("m1"), AdditionalDataPending: aws.Bool(true)},
+			"f|m1": {Marker: aws.String("m2"), AdditionalDataPending: aws.Bool(true)},
+			"f|m2": {Marker: aws.String("tail"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
 	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: m, InstanceID: "db", Engine: "postgres"})
@@ -233,5 +233,66 @@ func TestNewFetcher_ValidatesInputs(t *testing.T) {
 	}
 	if _, err := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: &mockAPI{}}); err == nil {
 		t.Fatal("expected err for missing InstanceID")
+	}
+}
+
+func TestPullPortion_ExtractsTimestampAndSeverity(t *testing.T) {
+	fixed := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
+	data := `2026-07-21 10:15:32 UTC:10.0.1.5(53422):app@orders:[12345]:ERROR:  relation "missing" does not exist
+	at character 15 raw continuation
+2026-07-21 10:15:34 UTC::@:[389]:LOG:  checkpoint starting: time
+`
+	m := &mockAPI{
+		downloadResponses: map[string]*awsrds.DownloadDBLogFilePortionOutput{
+			"error/postgresql.log|0": {
+				LogFileData: aws.String(data),
+				Marker:      aws.String("100"),
+			},
+		},
+	}
+	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{
+		API: m, InstanceID: "db-1", Engine: "postgres", Clock: newFixedClock(fixed),
+	})
+
+	chunk, err := f.PullPortion(context.Background(), "error/postgresql.log", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunk.Records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(chunk.Records))
+	}
+	r := chunk.Records
+	wantTS := time.Date(2026, 7, 21, 10, 15, 32, 0, time.UTC)
+	if r[0].Severity != "ERROR" || !r[0].Timestamp.Equal(wantTS) {
+		t.Fatalf("record 0: severity=%q ts=%v, want ERROR %v", r[0].Severity, r[0].Timestamp, wantTS)
+	}
+	// Continuation line: no severity, inherits the previous line's timestamp.
+	if r[1].Severity != "" || !r[1].Timestamp.Equal(wantTS) {
+		t.Fatalf("record 1 (continuation): severity=%q ts=%v, want inherited %v", r[1].Severity, r[1].Timestamp, wantTS)
+	}
+	if r[2].Severity != "LOG" || !r[2].Timestamp.Equal(time.Date(2026, 7, 21, 10, 15, 34, 0, time.UTC)) {
+		t.Fatalf("record 2: %+v", r[2])
+	}
+}
+
+func TestPullPortion_UnknownEngineKeepsFetchTime(t *testing.T) {
+	fixed := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
+	m := &mockAPI{
+		downloadResponses: map[string]*awsrds.DownloadDBLogFilePortionOutput{
+			"whatever.log|0": {
+				LogFileData: aws.String("2026-07-21T10:15:32.000000Z 8 [Warning] looks like mysql\n"),
+				Marker:      aws.String("1"),
+			},
+		},
+	}
+	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{
+		API: m, InstanceID: "db-1", Engine: "unknown", Clock: newFixedClock(fixed),
+	})
+	chunk, err := f.PullPortion(context.Background(), "whatever.log", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := chunk.Records[0]; r.Severity != "" || !r.Timestamp.Equal(fixed) {
+		t.Fatalf("unknown engine must not extract metadata: %+v", r)
 	}
 }

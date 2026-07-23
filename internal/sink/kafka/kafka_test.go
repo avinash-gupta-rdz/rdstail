@@ -115,3 +115,48 @@ func TestClose_ClosesProducer(t *testing.T) {
 		t.Fatal("producer not closed")
 	}
 }
+
+func TestClientOpts_TLSAndSASL(t *testing.T) {
+	base := &config.KafkaSink{Brokers: []string{"b:9092"}, Topic: "t"}
+
+	// Plain broker config: just seeds.
+	opts, err := kafkasink.ClientOpts(base)
+	if err != nil || len(opts) != 1 {
+		t.Fatalf("plain: err=%v len=%d", err, len(opts))
+	}
+
+	// TLS + SASL default mechanism (plain) + client id → 4 opts.
+	cfg := &config.KafkaSink{Brokers: []string{"b:9092"}, Topic: "t",
+		ClientID: "c", TLS: true, SASLUsername: "u", SASLPassword: "p"}
+	opts, err = kafkasink.ClientOpts(cfg)
+	if err != nil || len(opts) != 4 {
+		t.Fatalf("tls+sasl: err=%v len=%d", err, len(opts))
+	}
+
+	// Each SCRAM mechanism builds without error.
+	for _, m := range []string{"scram-sha-256", "scram-sha-512"} {
+		cfg.SASLMechanism = m
+		if _, err := kafkasink.ClientOpts(cfg); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+	}
+
+	// Unknown mechanism rejected.
+	cfg.SASLMechanism = "gssapi"
+	if _, err := kafkasink.ClientOpts(cfg); err == nil {
+		t.Fatal("expected error for unsupported mechanism")
+	}
+}
+
+func TestNew_ConstructsRealClientWithTLSAndSASL(t *testing.T) {
+	// No connection is made at construction time — this verifies the full
+	// option wiring path doesn't error.
+	s, err := kafkasink.New(kafkasink.Opts{Name: "k", Cfg: &config.KafkaSink{
+		Brokers: []string{"broker.invalid:9092"}, Topic: "t",
+		TLS: true, SASLUsername: "u", SASLPassword: "p", SASLMechanism: "scram-sha-512",
+	}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	_ = s.Close()
+}

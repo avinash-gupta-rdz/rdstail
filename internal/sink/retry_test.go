@@ -12,8 +12,8 @@ import (
 )
 
 type flakySink struct {
-	failUntil int
-	calls     atomic.Int32
+	failUntil   int
+	calls       atomic.Int32
 	errToReturn error
 }
 

@@ -120,7 +120,7 @@ func TestDLQ_PutListDelete(t *testing.T) {
 	if err := s.DLQPut(ctx, "s3-primary", "b1", []byte("payload"), "timeout"); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	items, err := s.DLQList(ctx, 10)
+	items, err := s.DLQList(ctx, state.DLQQuery{Limit: 10})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("list: err=%v len=%d", err, len(items))
 	}
@@ -130,9 +130,60 @@ func TestDLQ_PutListDelete(t *testing.T) {
 	if err := s.DLQDelete(ctx, items[0].ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	items, _ = s.DLQList(ctx, 10)
+	items, _ = s.DLQList(ctx, state.DLQQuery{Limit: 10})
 	if len(items) != 0 {
 		t.Fatalf("expected 0 after delete, got %d", len(items))
+	}
+}
+
+func TestDLQ_FilterPaginateCountPurge(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := s.DLQPut(ctx, "s3-primary", "b", []byte("p"), "r"); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+	}
+	if err := s.DLQPut(ctx, "kafka-hot", "b", []byte("p"), "r"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Filter by sink.
+	items, err := s.DLQList(ctx, state.DLQQuery{SinkName: "s3-primary"})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("filtered list: err=%v len=%d", err, len(items))
+	}
+
+	// Paginate with AfterID: page size 2 then resume from cursor.
+	page1, err := s.DLQList(ctx, state.DLQQuery{SinkName: "s3-primary", Limit: 2})
+	if err != nil || len(page1) != 2 {
+		t.Fatalf("page1: err=%v len=%d", err, len(page1))
+	}
+	page2, err := s.DLQList(ctx, state.DLQQuery{SinkName: "s3-primary", AfterID: page1[1].ID, Limit: 2})
+	if err != nil || len(page2) != 1 {
+		t.Fatalf("page2: err=%v len=%d", err, len(page2))
+	}
+	if page2[0].ID <= page1[1].ID {
+		t.Fatalf("pagination not monotonic: %d <= %d", page2[0].ID, page1[1].ID)
+	}
+
+	// Counts.
+	if n, err := s.DLQCount(ctx, ""); err != nil || n != 4 {
+		t.Fatalf("count all: err=%v n=%d", err, n)
+	}
+	if n, err := s.DLQCount(ctx, "kafka-hot"); err != nil || n != 1 {
+		t.Fatalf("count kafka: err=%v n=%d", err, n)
+	}
+
+	// Purge one sink, then the rest.
+	if n, err := s.DLQPurge(ctx, "s3-primary"); err != nil || n != 3 {
+		t.Fatalf("purge s3: err=%v n=%d", err, n)
+	}
+	if n, err := s.DLQPurge(ctx, ""); err != nil || n != 1 {
+		t.Fatalf("purge all: err=%v n=%d", err, n)
+	}
+	if n, _ := s.DLQCount(ctx, ""); n != 0 {
+		t.Fatalf("expected empty DLQ, got %d", n)
 	}
 }
 
@@ -155,5 +206,40 @@ func TestReopen_RetainsData(t *testing.T) {
 	got, found, _ := s2.Get(ctx, "db-1", "pg.log")
 	if !found || got.Marker != "durable" {
 		t.Fatalf("expected durable=marker after reopen, got %+v found=%v", got, found)
+	}
+}
+
+func TestGCCheckpoints_PrunesOnlyStaleRows(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Two rows: one fresh, one that we'll age by rewriting updated_at directly.
+	_ = s.Set(ctx, "db-1", "postgresql.log", state.Checkpoint{Marker: "fresh"})
+	_ = s.Set(ctx, "db-1", "postgresql.log.2025-01-01-00", state.Checkpoint{Marker: "stale"})
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE checkpoints SET updated_at = ? WHERE log_file = ?`,
+		time.Now().Add(-40*24*time.Hour).UnixMilli(), "postgresql.log.2025-01-01-00"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry run counts without deleting.
+	n, err := s.GCCheckpoints(ctx, time.Now().Add(-30*24*time.Hour), true)
+	if err != nil || n != 1 {
+		t.Fatalf("dry-run: n=%d err=%v", n, err)
+	}
+	if _, found, _ := s.Get(ctx, "db-1", "postgresql.log.2025-01-01-00"); !found {
+		t.Fatal("dry-run must not delete")
+	}
+
+	// Real run deletes the stale row only.
+	n, err = s.GCCheckpoints(ctx, time.Now().Add(-30*24*time.Hour), false)
+	if err != nil || n != 1 {
+		t.Fatalf("gc: n=%d err=%v", n, err)
+	}
+	if _, found, _ := s.Get(ctx, "db-1", "postgresql.log.2025-01-01-00"); found {
+		t.Fatal("stale row must be gone")
+	}
+	if _, found, _ := s.Get(ctx, "db-1", "postgresql.log"); !found {
+		t.Fatal("fresh row must survive")
 	}
 }

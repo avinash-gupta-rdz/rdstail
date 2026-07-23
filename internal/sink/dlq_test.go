@@ -24,14 +24,20 @@ func (m *mockDLQ) DLQPut(_ context.Context, sinkName, batchID string, payload []
 	return nil
 }
 
-func (m *mockDLQ) DLQList(_ context.Context, _ int) ([]state.DLQItem, error) { return m.items, nil }
-func (m *mockDLQ) DLQDelete(_ context.Context, _ int64) error                 { return nil }
+func (m *mockDLQ) DLQList(_ context.Context, _ state.DLQQuery) ([]state.DLQItem, error) {
+	return m.items, nil
+}
+func (m *mockDLQ) DLQDelete(_ context.Context, _ int64) error { return nil }
+func (m *mockDLQ) DLQCount(_ context.Context, _ string) (int64, error) {
+	return int64(len(m.items)), nil
+}
+func (m *mockDLQ) DLQPurge(_ context.Context, _ string) (int64, error) { return 0, nil }
 
 type alwaysFail struct{ err error }
 
-func (a *alwaysFail) Name() string                                          { return "fail" }
-func (a *alwaysFail) Type() string                                          { return "test" }
-func (a *alwaysFail) Close() error                                          { return nil }
+func (a *alwaysFail) Name() string                                           { return "fail" }
+func (a *alwaysFail) Type() string                                           { return "test" }
+func (a *alwaysFail) Close() error                                           { return nil }
 func (a *alwaysFail) Write(_ context.Context, _ []logrecord.LogRecord) error { return a.err }
 
 func TestDLQ_ParksPermanentFailures(t *testing.T) {

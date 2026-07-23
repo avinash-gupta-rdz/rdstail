@@ -8,12 +8,12 @@ func TestPostgresClassifier(t *testing.T) {
 		t.Fatalf("expected FilenameContains=postgres, got %q", c.FilenameContains())
 	}
 	cases := map[string]bool{
-		"error/postgresql.log.2025-01-01":         true,
-		"error/postgresql.log.2025-04-01-00":      true,
-		"error/postgres.log":                      true,
-		"error/mysql-error.log":                   false,
-		"slowquery/mysql-slowquery.log":           false,
-		"":                                        false,
+		"error/postgresql.log.2025-01-01":    true,
+		"error/postgresql.log.2025-04-01-00": true,
+		"error/postgres.log":                 true,
+		"error/mysql-error.log":              false,
+		"slowquery/mysql-slowquery.log":      false,
+		"":                                   false,
 	}
 	for name, want := range cases {
 		if got := c.Accepts(name); got != want {
@@ -25,14 +25,14 @@ func TestPostgresClassifier(t *testing.T) {
 func TestMySQLClassifier(t *testing.T) {
 	c := NewClassifier("mysql")
 	cases := map[string]bool{
-		"error/mysql-error.log":                true,
-		"error/mysql-error-running.log":        true,
-		"slowquery/mysql-slowquery.log":        true,
-		"general/mysql-general.log":            true,
-		"error/mariadb-error.log":              true,
-		"error/postgresql.log":                 true,  // under error/, fallback accepts
-		"audit/server_audit.log":               false,
-		"other/something.txt":                  false,
+		"error/mysql-error.log":         true,
+		"error/mysql-error-running.log": true,
+		"slowquery/mysql-slowquery.log": true,
+		"general/mysql-general.log":     true,
+		"error/mariadb-error.log":       true,
+		"error/postgresql.log":          true, // under error/, fallback accepts
+		"audit/server_audit.log":        false,
+		"other/something.txt":           false,
 	}
 	for name, want := range cases {
 		if got := c.Accepts(name); got != want {

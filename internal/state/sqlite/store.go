@@ -98,6 +98,10 @@ CREATE INDEX IF NOT EXISTS idx_dlq_created ON sinks_dlq(created_at);
 	return nil
 }
 
+// DB exposes the underlying handle for tests and maintenance tooling. Regular
+// callers must use the StateStore/DLQ/GCer interfaces.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // Close closes the DB. Subsequent calls return nil.
 func (s *Store) Close() error {
 	if s.db == nil {
@@ -182,6 +186,32 @@ func (s *Store) Delete(ctx context.Context, instance, logfile string) error {
 	return nil
 }
 
+// GCCheckpoints implements state.GCer: prunes checkpoint rows whose updated_at
+// is before olderThan. Active files are Set on every poll, so only rows for
+// rotated-out / departed files qualify.
+func (s *Store) GCCheckpoints(ctx context.Context, olderThan time.Time, dryRun bool) (int64, error) {
+	cutoff := olderThan.UTC().UnixMilli()
+	if dryRun {
+		var n int64
+		err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM checkpoints WHERE updated_at < ?`, cutoff).Scan(&n)
+		if err != nil {
+			return 0, fmt.Errorf("sqlite gc count: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM checkpoints WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite gc: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite gc rows: %w", err)
+	}
+	return n, nil
+}
+
 // --- DLQ (state.DLQ interface) ---
 
 // DLQPut enqueues a dead-letter record.
@@ -195,14 +225,17 @@ VALUES (?, ?, ?, ?, ?)`, sinkName, batchID, payload, reason, time.Now().UTC().Un
 	return nil
 }
 
-// DLQList returns up to limit items oldest-first.
-func (s *Store) DLQList(ctx context.Context, limit int) ([]state.DLQItem, error) {
+// DLQList returns items matching q, oldest-first (ascending ID).
+func (s *Store) DLQList(ctx context.Context, q state.DLQQuery) ([]state.DLQItem, error) {
+	limit := q.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, sink_name, batch_id, payload, reason, created_at
-FROM sinks_dlq ORDER BY id ASC LIMIT ?`, limit)
+FROM sinks_dlq
+WHERE id > ? AND (? = '' OR sink_name = ?)
+ORDER BY id ASC LIMIT ?`, q.AfterID, q.SinkName, q.SinkName, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite dlq list: %w", err)
 	}
@@ -228,4 +261,29 @@ func (s *Store) DLQDelete(ctx context.Context, id int64) error {
 		return fmt.Errorf("sqlite dlq delete: %w", err)
 	}
 	return nil
+}
+
+// DLQCount returns the number of parked items for sinkName ("" == all).
+func (s *Store) DLQCount(ctx context.Context, sinkName string) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM sinks_dlq WHERE (? = '' OR sink_name = ?)`, sinkName, sinkName).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite dlq count: %w", err)
+	}
+	return n, nil
+}
+
+// DLQPurge deletes all items for sinkName ("" == all) and returns the count.
+func (s *Store) DLQPurge(ctx context.Context, sinkName string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM sinks_dlq WHERE (? = '' OR sink_name = ?)`, sinkName, sinkName)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite dlq purge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite dlq purge rows: %w", err)
+	}
+	return n, nil
 }

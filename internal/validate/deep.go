@@ -1,7 +1,7 @@
 // Package validate implements the network-level `validate --deep` probes:
-// STS identity, RDS describe-probe per instance, S3 HeadBucket, HTTP HEAD, and
-// state-store open+close. Kafka metadata probing is left for a future phase
-// since it requires the real broker client with TLS/SASL plumbing.
+// STS identity, RDS describe-probe per instance, S3 HeadBucket, HTTP HEAD,
+// Kafka broker ping (with the sink's TLS/SASL settings), and state-store
+// open+close.
 package validate
 
 import (
@@ -16,9 +16,11 @@ import (
 	awsrds "github.com/aws/aws-sdk-go-v2/service/rds"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/avinash-gupta-rdz/rdstail/internal/awsx"
 	"github.com/avinash-gupta-rdz/rdstail/internal/config"
+	kafkasink "github.com/avinash-gupta-rdz/rdstail/internal/sink/kafka"
 	"github.com/avinash-gupta-rdz/rdstail/internal/state"
 
 	// register backends
@@ -129,8 +131,7 @@ func probeSinks(ctx context.Context, cfg *config.Config) []Result {
 		case config.SinkTypeHTTP:
 			out = append(out, probeHTTP(ctx, s))
 		case config.SinkTypeKafka:
-			// Kafka deep probe requires a full client spin-up; skipped for v1.
-			out = append(out, Result{Name: "sink." + s.Name, Err: errors.New("kafka deep probe: not implemented (v1)")})
+			out = append(out, probeKafka(ctx, s))
 		}
 	}
 	return out
@@ -145,13 +146,42 @@ func probeS3(ctx context.Context, s *config.Sink) Result {
 	if region == "" {
 		region = "us-east-1"
 	}
-	awsCfg, err := awsx.NewConfig(ctx, awsx.Options{Region: region})
+	awsCfg, err := awsx.NewConfig(ctx, awsx.Options{
+		Region:     region,
+		AssumeRole: s.S3.AssumeRole,
+		ExternalID: s.S3.ExternalID,
+	})
 	if err != nil {
 		return Result{Name: name, Err: err}
 	}
 	client := awss3.NewFromConfig(awsCfg)
 	_, err = client.HeadBucket(ctx, &awss3.HeadBucketInput{Bucket: aws.String(s.S3.Bucket)})
 	return Result{Name: name, Err: err}
+}
+
+// probeKafka dials the brokers with the sink's exact connection settings
+// (TLS, SASL) and pings for a metadata response. Catches unreachable brokers,
+// TLS mismatches, and bad credentials before `run` would.
+func probeKafka(ctx context.Context, s *config.Sink) Result {
+	name := "sink.kafka[" + s.Name + "].Ping"
+	if s.Kafka == nil {
+		return Result{Name: name, Err: errors.New("missing kafka config")}
+	}
+	opts, err := kafkasink.ClientOpts(s.Kafka)
+	if err != nil {
+		return Result{Name: name, Err: err}
+	}
+	client, err := kgo.NewClient(opts...)
+	if err != nil {
+		return Result{Name: name, Err: err}
+	}
+	defer client.Close()
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx); err != nil {
+		return Result{Name: name, Err: err}
+	}
+	return Result{Name: name}
 }
 
 func probeHTTP(ctx context.Context, s *config.Sink) Result {
