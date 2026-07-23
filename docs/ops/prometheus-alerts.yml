@@ -1,0 +1,91 @@
+# Ready-to-use Prometheus alerting rules for rdstail.
+# Drop into your rule_files, adjust thresholds to taste.
+#
+# Philosophy: rdstail never drops a log line — it parks undeliverable batches
+# in the DLQ and keeps going. These rules are how you find out it's doing that.
+
+groups:
+  - name: rdstail
+    rules:
+      # The one alert everyone should run: batches are parked in the DLQ.
+      # Data is safe but NOT delivered — fix the sink, then `rdstail dlq replay`.
+      - alert: RdstailDLQNotEmpty
+        expr: sum by (sink_name) (rdstail_dlq_depth) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rdstail DLQ has parked batches for sink {{ $labels.sink_name }}"
+          description: >
+            {{ $value }} batch(es) have exhausted retries against sink
+            {{ $labels.sink_name }} and are parked in the dead-letter queue.
+            Inspect with `rdstail dlq list`, fix the sink, then
+            `rdstail dlq replay`.
+
+      # DLQ actively growing — the sink is broken right now.
+      - alert: RdstailDLQGrowing
+        expr: delta(rdstail_dlq_depth[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "rdstail DLQ growing for sink {{ $labels.sink_name }}"
+          description: >
+            Sink {{ $labels.sink_name }} is failing writes faster than it
+            recovers; new batches keep dead-lettering. Check sink credentials,
+            connectivity, and quotas.
+
+      # Sink writes failing (pre-DLQ view; catches flapping before it parks).
+      - alert: RdstailSinkWriteFailures
+        expr: sum by (sink_type) (rate(rdstail_logs_failed_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rdstail sink writes failing ({{ $labels.sink_type }})"
+          description: >
+            Records are failing delivery to {{ $labels.sink_type }} at
+            {{ $value | humanize }} rec/s over 5m. Retries may still succeed;
+            correlate with rdstail_dlq_depth.
+
+      # AWS API errors — IAM drift, throttling, or an unreachable endpoint.
+      - alert: RdstailAPIErrors
+        expr: >
+          sum(rate(rdstail_api_calls_total{outcome!="ok"}[10m]))
+            /
+          clamp_min(sum(rate(rdstail_api_calls_total[10m])), 0.001) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rdstail AWS API error ratio above 10%"
+          description: >
+            More than 10% of RDS API calls are failing. Check IAM policy
+            drift, API throttling, and instance reachability
+            (`rdstail validate --deep`).
+
+      # The shipper itself is down.
+      - alert: RdstailDown
+        expr: up{job="rdstail"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "rdstail target down"
+          description: "Prometheus cannot scrape rdstail; logs are not shipping."
+
+      # Ingestion lag. CAUTION: rdstail_ingestion_lag_seconds compares the RDS
+      # server's last_written clock to local time — clock skew and idle
+      # databases both inflate it. Use a generous threshold and treat as a
+      # smoke signal, not a page.
+      - alert: RdstailIngestionLagHigh
+        expr: max by (instance) (rdstail_ingestion_lag_seconds) > 1800
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "rdstail ingestion lag > 30m on {{ $labels.instance }}"
+          description: >
+            Log data for {{ $labels.instance }} appears more than 30 minutes
+            behind. If the database is genuinely active, check worker logs;
+            if it's idle, this is expected — silence or raise the threshold.

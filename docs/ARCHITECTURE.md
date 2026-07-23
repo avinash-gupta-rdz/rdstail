@@ -46,26 +46,93 @@ Per poll, per logfile:
 2. `DownloadDBLogFilePortion(Marker=prev.Marker)` → `data`, `nextMarker`, `pending`.
 3. Parse to `[]LogRecord`, stamp each with
    `BatchID = sha256(instance|logfile|prev.Marker|nextMarker)[:16]`.
-4. `Sink.Write(...)` — sink MUST ack durably (S3 2xx, Kafka `acks=all`, HTTP 2xx).
-5. Only then `StateStore.Set(instance, logfile, {Marker: nextMarker, ...})`.
+4. Records accumulate across chunks up to `runtime.max_batch_bytes` /
+   `max_batch_records`; at a flush point, `Sink.Write(...)` — sink MUST ack
+   durably (S3 2xx, Kafka `acks=all`, HTTP 2xx).
+5. Only then `StateStore.Set(instance, logfile, {Marker: <last chunk's nextMarker>, ...})`.
 6. If `AdditionalDataPending`, loop to (2) in the same poll.
 
-Crashes between (4) and (5) cause at most one duplicate chunk on resume. The
-`BatchID` on each record lets downstream consumers dedupe if they need exactly-once.
+Crashes between (4) and (5) cause at most one duplicate batch (bounded by the
+batch thresholds) on resume. The per-chunk `BatchID` on each record — preserved
+through coalescing — lets downstream consumers dedupe if they need exactly-once.
 
 ## Concurrency
 
-- **One goroutine per RDS instance.** Iterates that instance's log files serially
-  — preserves per-file ordering, bounds per-instance API concurrency.
-- **Bounded parallelism across instances** via `runtime.max_instances_concurrent`.
+- **One goroutine per RDS instance**, bounded across instances via
+  `runtime.max_instances_concurrent`.
+- **Cross-file parallelism** via `runtime.max_workers`: a single global
+  semaphore bounds how many log files are being drained (fetch → write →
+  checkpoint) concurrently across ALL instances. `max_workers: 1` keeps every
+  instance serial. Per-file ordering needs no queueing machinery: each file is
+  drained by exactly one goroutine within a poll, polls never overlap, and
+  checkpoints are per-file — there is no cross-file state to race on.
 - **Shared sink write path.** All sinks share the same `Sink` (single sink or a
-  `Fanout` over many). Each `Write` is synchronous from the worker's point of view;
-  `runtime.max_workers` governs how many concurrent writes the decorators allow
-  (via `KeyedRunner` in the sink pool — currently simple sequential within an
-  instance).
+  `Fanout` over many); implementations must tolerate concurrent `Write` calls
+  for different files. Writes for one (instance, logfile) are always serial.
 - **Graceful shutdown.** SIGINT/SIGTERM cancels the root ctx. Instance workers
   finish their current pull, flush their checkpoint, and exit. `runtime.shutdown_timeout`
   is the upper bound; after that the scheduler returns even if workers are stuck.
+
+## Instance discovery
+
+Sources may select instances by tag (`discover.tags`, AND semantics) instead
+of — or in addition to — an explicit list. At startup, `DescribeDBInstances`
+(already in the minimum IAM policy) is paginated, each instance's `TagList` is
+matched, its `Engine` is normalised (`aurora-postgresql` → postgres,
+`aurora`/`aurora-mysql` → mysql; unsupported engines are skipped), and the
+union with explicit instances — deduplicated by (region, instance ID) —
+becomes the worker set. A source-level `engine` additionally filters
+discovery. `rdstail discover` previews matches without starting the pipeline.
+The 500-instance cap is re-checked after every discovery pass.
+
+With `discover.refresh_interval` set (≥ 30s), the scheduler re-resolves the
+desired set on that cadence and **reconciles**: workers start for instances
+that joined the fleet, workers for departed instances are cancelled (their
+checkpoints remain, so a returning instance resumes), and a worker that
+previously exited on error is restarted if its instance is still desired. A
+failed re-discovery pass logs a warning and keeps the current worker set —
+never tears down workers on a flaky API call. Explicit `instances` are part of
+every refresh result, so they are never reconciled away.
+
+## Log metadata extraction
+
+`internal/parse` lifts two attributes from each raw line, best-effort, per
+engine — the event **timestamp** and the **severity** token. The raw line is
+never modified; `LogRecord.Message` stays verbatim.
+
+- **PostgreSQL** — RDS pins `log_line_prefix` to `%t:%r:%u@%d:[%p]:` (not
+  user-changeable), so the prefix regex is reliable:
+  `2026-07-21 10:15:32 UTC:10.0.1.5(53422):app@orders:[12345]:ERROR:  ...`
+  Severities: DEBUG1-5, LOG, INFO, NOTICE, WARNING, ERROR, FATAL, PANIC, plus
+  continuation tokens (STATEMENT, DETAIL, HINT, CONTEXT).
+- **MySQL** — `2026-07-21T10:15:32.835618Z 8 [Warning] [MY-010055] [Server] …`
+  (5.7 form without err-code also matches). Severities normalised upper-case:
+  SYSTEM, ERROR, WARNING, NOTE. Slow-query `# Time:` headers yield a timestamp
+  with no severity.
+- **MariaDB** — `2026-07-21 10:15:36 0 [Note] …`.
+
+Rules: a matching line gets the server-side timestamp and severity; a
+non-matching line (stack trace, wrapped query text) inherits the nearest
+preceding timestamped line's time **within the same chunk** and carries no
+severity; if nothing has matched yet, fetch time is used — the pre-extraction
+behaviour. Unknown engines skip extraction entirely.
+
+## Adaptive polling
+
+Per-instance, opt-in via `runtime.poll_interval_max > poll_interval`:
+
+- A poll that ships ≥ 1 record resets the interval to `poll_interval` (the
+  fast/base rate).
+- An idle poll multiplies the interval by `poll_backoff_multiplier` (default
+  2.0), capped at `poll_interval_max`.
+- The current interval is exported as `rdstail_poll_interval_seconds{instance}`.
+
+Worst-case added latency after an idle stretch is one (backed-off) interval —
+the first poll that finds data immediately snaps back to base, and
+`AdditionalDataPending` chunks are always drained within the same poll. Each
+instance backs off independently, so one chatty database doesn't keep a fleet
+of quiet ones polling fast. With `poll_interval_max` unset (default), polling
+is fixed-interval exactly as before.
 
 ## Rotation handling
 
@@ -75,7 +142,7 @@ On every poll, `DescribeDBLogFiles` is called. For each file:
 |---|---|
 | File not in state store | Apply `runtime.start_from`: `beginning` → `Marker="0"`; `end` → `SkipToEnd` once, persist tail marker. |
 | `file.Size < prev.FileSize` | Truncation (rotate-in-place). Reset `Marker="0"`. |
-| File no longer returned | Assumed rotated out. State remains; will eventually be manually GC'd. |
+| File no longer returned | Assumed rotated out. Its checkpoint row is pruned by `rdstail state gc` or automatically when `runtime.checkpoint_retention` is set (rows untouched longer than the retention; 6-hourly sweep). |
 
 ## State store
 
@@ -89,7 +156,15 @@ On every poll, `DescribeDBLogFiles` is called. For each file:
 ## Sinks
 
 All built sinks are wrapped (innermost-first) as:
-`metrics → retry → DLQ`. So:
+`metrics → retry → DLQ → filter`. So:
+
+- A sink with `filter` set sees only matching records; a fully-filtered batch
+  ACKs immediately without touching metrics/retry/DLQ, so checkpoints advance
+  normally. `min_severity` ranks DEBUG < LOG/INFO/NOTICE/NOTE/SYSTEM <
+  WARNING < ERROR < FATAL < PANIC across engines; records without a rankable
+  severity (continuation lines, unparsed formats) never pass `min_severity`
+  — an alert route drops them by design, while unfiltered sinks still archive
+  them.
 
 - Retries are visible in `sink_write_duration_seconds`.
 - Only post-retry *terminal* failures end up in the `sinks_dlq` table (or in
@@ -97,16 +172,47 @@ All built sinks are wrapped (innermost-first) as:
 - 4xx responses from HTTP and `PermanentError` wraps are short-circuited past
   retry directly to DLQ.
 
+### DLQ replay (`rdstail dlq`)
+
+`internal/replay` is the recovery half of the DLQ contract. `rdstail dlq replay`
+pages through `sinks_dlq` oldest-first (keyset pagination on the row ID), and
+per row:
+
+1. Build the sink named on the row (lazily, first use) — wrapped with the
+   config's retry policy but **not** the DLQ decorator, so a still-broken sink
+   fails loudly instead of re-parking the batch behind a nil error.
+2. Unmarshal the stored `[]LogRecord` payload and `Write` it.
+3. `DLQDelete` the row **only after** the sink ACKs. A crash between write and
+   delete re-sends the batch on the next replay — at-least-once, dedupable via
+   the records' original `BatchID`.
+
+Failed and undecodable rows stay in place; rows for sinks no longer in the
+config are skipped and reported. Replay is idempotent to re-run and safe to run
+while `rdstail run` is live (SQLite WAL + busy timeout handle the second
+writer). `dlq list` / `dlq purge --yes` complete the lifecycle.
+
 ### S3
 - NDJSON + gzip per batch.
+- Cross-account: `assume_role` (+ optional `external_id`) assumes a role in
+  the bucket's account for the writes; the deep probe uses the same identity.
 - Key: `{prefix}/{instance}/{engine}/{logfile}/{YYYY/MM/DD}/{unix-ms}-{batch_id}.ndjson.gz`.
-- Single `PutObject` per batch (no multipart — batches are ~1 MB).
+- Single `PutObject` per batch (no multipart — batches are bounded by
+  `runtime.max_batch_bytes`, 5 MiB default).
 - SSE: `AES256` default, `aws:kms` if `kms_key_id` is set.
 
 ### Kafka
 - `franz-go` producer, `acks=all`, idempotent, zstd compression.
+- Connection security: `tls: true` for TLS; `sasl_username`/`sasl_password`
+  with `sasl_mechanism: plain | scram-sha-256 | scram-sha-512` (default plain).
+  The same options drive the `validate --deep` broker ping.
 - Key: `instance|logfile` (partition affinity → per-file order preserved).
 - Topic: explicit `topic` OR `topic_template` with `{engine}`/`{instance}` substitutions.
+
+### Stdout
+- One line per record to standard output: NDJSON (default) or `text` (raw
+  message only). Flushed per batch; `Write` ACKs once the pipe accepts the
+  bytes. rdstail's own logs go to stderr, so stdout stays clean for data —
+  designed for `rdstail run | vector` / fluent-bit / `jq`.
 
 ### HTTP webhook
 - `POST application/json` (optional `Content-Encoding: gzip`).
@@ -122,9 +228,12 @@ All built sinks are wrapped (innermost-first) as:
   - `rdstail_logs_failed_total{instance, sink_type, reason}`
   - `rdstail_ingestion_lag_seconds{instance, log_file}`
   - `rdstail_api_calls_total{operation, outcome}`
+  - `rdstail_poll_interval_seconds{instance}`
   - `rdstail_batch_bytes{sink_type}`
   - `rdstail_sink_write_duration_seconds{sink_type}`
   - `rdstail_state_store_ops_total{op, outcome}`
+  - `rdstail_dlq_depth{sink_name}` — parked batches, refreshed every 30s;
+    example alert rules in `docs/ops/prometheus-alerts.yml`
 - Cardinality bound: `log_file` label is basename-only and capped at 64 chars.
 
 ## IAM policy (minimum)
@@ -153,15 +262,12 @@ add `sts:AssumeRole` for cross-account.
 
 ## Known limitations (v1)
 
-- **No advanced parsing.** `LogRecord.Timestamp` is the fetch time, not the
-  server-side log line timestamp (engine-specific parsing is explicitly
-  out-of-scope per PRD §3).
-- **No adaptive polling.** Fixed `poll_interval`. Phase 9 adds backoff-on-empty
-  and speed-up-on-pending.
-- **No stateful S3 batcher.** One `PutObject` per RDS chunk (~1 MB). A batcher
-  that coalesces across chunks is a future enhancement.
-- **`max_workers` is currently unused** as a concurrency knob because each
-  instance worker writes serially. The plumbing for a shared write pool lives in
-  `pipeline.KeyedRunner` and will activate when we add cross-file parallelism.
-- **Kafka `--deep` probe** is not implemented; broker client needs the full
-  TLS/SASL plumbing.
+- **Metadata extraction only, not parsing.** Timestamp + severity are lifted
+  from lines that match the engine's known format (see "Log metadata
+  extraction"); query text, fields, and parameters stay opaque. Structuring
+  log content remains out-of-scope per PRD §3.
+- **Batching is per poll-cycle.** Chunks coalesce across the pagination loop
+  (`runtime.max_batch_bytes` / `max_batch_records`), but a batch never spans
+  poll cycles — a file with little new data per poll still produces one small
+  object per poll. Cross-poll buffering would delay checkpoints across polls
+  and is deliberately out of scope.

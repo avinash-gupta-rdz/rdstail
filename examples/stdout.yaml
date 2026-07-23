@@ -1,0 +1,29 @@
+# Pipe integration: no S3, no Kafka — records stream to stdout as NDJSON while
+# rdstail's own logs go to stderr. Perfect for trying rdstail with zero sink
+# infrastructure, or feeding an existing agent:
+#
+#   rdstail run -c stdout.yaml | jq '{ts: .timestamp, sev: .severity, msg: .message}'
+#   rdstail run -c stdout.yaml | vector --config /etc/vector/from-stdin.toml
+#
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances: [my-db-1]
+
+sinks:
+  - name: pipe
+    type: stdout
+    stdout:
+      format: ndjson   # ndjson (full record JSON) | text (raw log lines only)
+
+state:
+  type: sqlite
+  path: ./state.db
+
+runtime:
+  poll_interval: 10s
+  start_from: end
+
+metrics:
+  enabled: false       # keep the process quiet for pipe use

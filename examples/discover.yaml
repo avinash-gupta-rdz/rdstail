@@ -1,0 +1,37 @@
+# Tag-based discovery: ingest every RDS instance tagged rdstail=true in the
+# region — no hand-maintained instance list. Engine is detected per instance
+# (Aurora variants normalise to their base engine). With refresh_interval set,
+# fleet churn is tracked live — workers start/stop as tagged instances come and
+# go. Preview with: rdstail discover -c discover.yaml
+sources:
+  - type: rds
+    region: ap-south-1
+    discover:
+      tags:
+        rdstail: "true"
+      refresh_interval: 5m   # omit (or 0) for startup-only discovery
+
+  # Tags + engine filter + explicit extras can combine:
+  # - type: rds
+  #   engine: postgres            # only discover postgres instances
+  #   region: eu-west-1
+  #   instances: [legacy-pg-1]    # union with discovered
+  #   discover:
+  #     tags: {team: payments}
+
+sinks:
+  - name: s3-primary
+    type: s3
+    s3:
+      bucket: my-log-bucket
+      region: ap-south-1
+      prefix: rds/
+
+state:
+  type: sqlite
+  path: /var/lib/rdstail/state.db
+
+runtime:
+  poll_interval: 10s
+  poll_interval_max: 5m
+  start_from: end

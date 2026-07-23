@@ -1,5 +1,8 @@
-# Fanout config: every record is written to BOTH S3 and Kafka. This is the
-# current default routing semantic — there is no per-sink filtering in v1.
+# Fanout config: every record goes to S3 (archive) and Kafka (realtime), and
+# ONLY error-and-worse records hit the alert webhook — per-sink `filter`
+# narrows what each sink receives. This is how you wire "page me on FATAL"
+# without rdstail becoming an alerting system: the webhook feeds your
+# SIEM/Slack/PagerDuty bridge, which owns the alerting.
 sources:
   - type: rds
     engine: postgres
@@ -24,6 +27,14 @@ sinks:
     kafka:
       brokers: [kafka-1.internal:9092]
       topic_template: rds-logs-{engine}
+
+  - name: alerts
+    type: http
+    filter:
+      min_severity: ERROR      # ERROR, FATAL, PANIC only
+    http:
+      url: https://hooks.internal/rds-alerts
+      gzip: true
 
 state:
   type: sqlite
