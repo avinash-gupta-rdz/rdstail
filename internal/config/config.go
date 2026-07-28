@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env"
-	"github.com/knadh/koanf/providers/file"
+	"github.com/knadh/koanf/providers/rawbytes"
 	"github.com/knadh/koanf/v2"
 
 	"github.com/avinash-gupta-rdz/rdstail/internal/sink"
@@ -190,19 +191,25 @@ const (
 	StartFromEnd       = "end"
 )
 
-// Load reads and parses a YAML config file. Environment variable overrides use the
+// Load reads and parses a YAML config file. ${VAR} references anywhere in the
+// file are replaced with the environment variable's value before parsing —
+// the way secrets (API keys, SASL passwords) stay out of the YAML. References
+// to unset variables are left verbatim — the broken reference travels intact
+// (and thus greppable/visible at the receiving end) instead of silently
+// becoming an empty string. Environment variable overrides use the
 // prefix RDSTAIL_ and double-underscore as the nesting separator
 // (e.g. RDSTAIL_RUNTIME__POLL_INTERVAL=5s).
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config path is required")
 	}
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("stat config: %w", err)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 
 	k := koanf.New(".")
-	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+	if err := k.Load(rawbytes.Provider(expandEnvRefs(raw)), yaml.Parser()); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 	// Env overrides: RDSTAIL_FOO__BAR → foo.bar
@@ -220,6 +227,20 @@ func Load(path string) (*Config, error) {
 	}
 	applyPostDefaults(cfg)
 	return cfg, nil
+}
+
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnvRefs substitutes ${VAR} with the environment value. Unset
+// variables are left as-is; there is no escape syntax — RDS configs have no
+// legitimate literal "${NAME}" strings.
+func expandEnvRefs(b []byte) []byte {
+	return envRef.ReplaceAllFunc(b, func(m []byte) []byte {
+		if v, ok := os.LookupEnv(string(m[2 : len(m)-1])); ok {
+			return []byte(v)
+		}
+		return m
+	})
 }
 
 func defaults() *Config {

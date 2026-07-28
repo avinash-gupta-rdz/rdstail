@@ -316,6 +316,17 @@ Global flags:
 
 ---
 
+## Integrations
+
+The `http` and `stdout` sinks already reach the tools you run — copy-paste
+recipes (vendor-side setup, full YAML, what the record looks like on
+arrival) live in [`docs/integrations/`](docs/integrations/README.md):
+
+| Backend | Route |
+|---|---|
+| [Datadog](docs/integrations/datadog.md), [Axiom](docs/integrations/axiom.md), [Better Stack](docs/integrations/betterstack.md) | `http` sink, direct — their intake APIs accept rdstail's batched JSON as-is |
+| [Splunk HEC](docs/integrations/splunk.md), [Grafana Loki](docs/integrations/loki.md), [Elasticsearch/OpenSearch](docs/integrations/elastic.md) | `stdout` → [vector](docs/integrations/vector.md) or [fluent-bit](docs/integrations/fluent-bit.md) speaking the backend's protocol |
+
 ## Configuration
 
 See `examples/` for a per-topology catalogue:
@@ -326,6 +337,7 @@ See `examples/` for a per-topology catalogue:
 | `examples/s3-only.yaml` | Postgres fleet → S3. |
 | `examples/kafka-only.yaml` | MySQL fleet → Kafka with `topic_template`. |
 | `examples/http-webhook.yaml` | Single instance → webhook with gzip. |
+| `examples/datadog.yaml` | Direct to Datadog's logs intake — no CloudWatch, no Lambda. |
 | `examples/fanout.yaml` | Every record written to both S3 **and** Kafka. |
 | `examples/discover.yaml` | Tag-based discovery — no hand-maintained instance list. |
 | `examples/stdout.yaml` | Pipe integration — NDJSON to stdout for vector/fluent-bit/jq. |
@@ -436,6 +448,30 @@ RDSTAIL_RUNTIME__POLL_INTERVAL=5s \
 RDSTAIL_LOGGING__LEVEL=debug \
   rdstail run -c rdstail.yaml
 ```
+
+### Secrets: `${VAR}` expansion
+
+`${VAR}` references anywhere in the YAML are replaced with the environment
+variable's value at load time — API keys and SASL passwords stay out of the
+file:
+
+```yaml
+headers:
+  Authorization: Bearer ${SIEM_TOKEN}
+```
+
+References to *unset* variables are left verbatim — the literal
+`${NAME}` travels through intact (easy to spot at the receiving end)
+instead of silently becoming an empty string. Bare `$VAR` and other `$`
+uses are untouched. Note that `rdstail validate` cannot tell a leftover
+reference from a real value, so an unset variable first surfaces as an
+auth failure at the backend (which parks batches in the DLQ, losing
+nothing).
+
+Substitution is textual and happens *before* YAML parsing (like
+`envsubst`), so a value containing YAML-special characters (newlines,
+unbalanced quotes) can change how the file parses — run `rdstail validate`
+after changing a secret if in doubt.
 
 ---
 

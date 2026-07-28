@@ -123,6 +123,72 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoad_ExpandsEnvRefs(t *testing.T) {
+	yaml := `
+sources:
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances: [db-1]
+
+sinks:
+  - name: hook
+    type: http
+    http:
+      url: https://ingest.example.com/v1
+      headers:
+        Authorization: Bearer ${TEST_API_TOKEN}
+        X-Unset: ${TEST_UNSET_VAR_XYZ}
+  - name: mq
+    type: kafka
+    kafka:
+      brokers: [b:9092]
+      topic: t
+      sasl_mechanism: plain
+      sasl_username: rdstail
+      sasl_password: ${TEST_SASL_PW}
+`
+	t.Setenv("TEST_API_TOKEN", "s3cr3t")
+	t.Setenv("TEST_SASL_PW", "kafka-pw")
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h := cfg.Sinks[0].HTTP.Headers
+	if h["Authorization"] != "Bearer s3cr3t" {
+		t.Errorf("Authorization = %q, want expanded token", h["Authorization"])
+	}
+	// Unset refs stay verbatim so typos are visible, not silently empty.
+	if h["X-Unset"] != "${TEST_UNSET_VAR_XYZ}" {
+		t.Errorf("X-Unset = %q, want the reference left as-is", h["X-Unset"])
+	}
+	// Expansion applies to any field, not just headers.
+	if pw := cfg.Sinks[1].Kafka.SASLPassword; pw != "kafka-pw" {
+		t.Errorf("sasl_password = %q, want expanded value", pw)
+	}
+}
+
+func TestExpandEnvRefs(t *testing.T) {
+	t.Setenv("TEST_EER_A", "alpha")
+	t.Setenv("TEST_EER_DOLLARS", "pa$$wd${TEST_EER_A}") // metachars in value
+	cases := []struct{ in, want string }{
+		{"x: ${TEST_EER_A}", "x: alpha"},
+		{"x: ${TEST_EER_A}${TEST_EER_A}", "x: alphaalpha"},
+		{"x: $TEST_EER_A", "x: $TEST_EER_A"}, // bare $NAME not expanded
+		{"x: ${TEST_EER_MISSING}", "x: ${TEST_EER_MISSING}"},
+		{"x: ${1BAD}", "x: ${1BAD}"}, // invalid name untouched
+		{"cost is $5", "cost is $5"},
+		// Values are inserted literally: no corruption of $/${...} in the
+		// value, and no recursive re-expansion.
+		{"x: ${TEST_EER_DOLLARS}", "x: pa$$wd${TEST_EER_A}"},
+	}
+	for _, tc := range cases {
+		if got := string(expandEnvRefs([]byte(tc.in))); got != tc.want {
+			t.Errorf("expandEnvRefs(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestValidate_DiscoverSources(t *testing.T) {
 	base := func() *Config {
 		c := defaults()

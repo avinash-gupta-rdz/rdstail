@@ -82,15 +82,16 @@ rdstail cost — the screenshot people paste into Slack to justify adopting the
 tool. Landed as `rdstail cost-estimate [--region R [-i ID]... | -c config]
 [--json]`, no config file required.
 
-### 5. Integration recipes for the tools people already use
+### 5. ~~Integration recipes for the tools people already use~~ — ✅ shipped
 
-The `http` and `stdout` sinks already reach almost everything; nobody knows
-that. Ship copy-paste recipes (docs + `examples/`) for: **Datadog, Splunk
-HEC, Grafana Loki, Elastic, Axiom, Better Stack** via the HTTP sink, and
-**vector / fluent-bit** via stdout. Each recipe: full YAML, the vendor-side
-setup in two lines, and what the record looks like on arrival. Zero code —
-this is pure discoverability, and each recipe is a new search-engine landing
-page ("rds logs to datadog without cloudwatch").
+The `http` and `stdout` sinks already reach almost everything; nobody knew
+that. Landed in [`docs/integrations/`](docs/integrations/README.md):
+**Datadog, Axiom, Better Stack** direct via the HTTP sink; **Splunk HEC,
+Grafana Loki, Elasticsearch/OpenSearch** via stdout → **vector /
+fluent-bit**. Each recipe: full YAML, the vendor-side setup in two lines,
+and what the record looks like on arrival — each one a search-engine landing
+page ("rds logs to datadog without cloudwatch"). Shipped alongside `${VAR}`
+config expansion so the recipes' API keys come from the environment.
 
 ---
 

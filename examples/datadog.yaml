@@ -1,0 +1,46 @@
+# RDS logs → Datadog, direct — no CloudWatch, no Lambda forwarder.
+# Full recipe (vendor-side setup, what arrives): docs/integrations/datadog.md
+#
+#   export DD_API_KEY=...        # ${DD_API_KEY} expands at config load
+#   rdstail run -c datadog.yaml
+
+sources:
+  - type: rds
+    engine: postgres
+    region: us-east-1
+    instances:
+      - prod-pg-writer
+
+sinks:
+  - name: datadog
+    type: http
+    http:
+      # EU site: http-intake.logs.datadoghq.eu — match your Datadog site.
+      url: https://http-intake.logs.datadoghq.com/api/v2/logs?ddsource=rdstail&ddtags=env:prod
+      headers:
+        DD-API-KEY: ${DD_API_KEY}
+      gzip: true
+    # Ship only what you'd pay to index; add a parallel S3 sink for the
+    # full archive (see fanout.yaml).
+    # filter:
+    #   min_severity: WARNING
+
+state:
+  type: sqlite
+  path: ./state.db
+
+runtime:
+  poll_interval: 10s
+  start_from: end
+  # Datadog caps one payload at 1000 events / ~5 MB uncompressed. These
+  # thresholds trip after the chunk that crosses them (overshoot up to
+  # ~1 MB / one chunk of records), so leave headroom below the caps.
+  max_batch_records: 500
+  max_batch_bytes: 3145728
+
+metrics:
+  enabled: true
+  listen: :9090
+
+logging:
+  level: info

@@ -7,6 +7,15 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **Integration recipes** — copy-paste paths from RDS logs to the tools you
+  already run, in `docs/integrations/`: Datadog, Axiom, and Better Stack
+  direct via the `http` sink (their intake APIs accept rdstail's batched
+  JSON as-is), and Splunk HEC, Grafana Loki, and Elasticsearch/OpenSearch
+  via `stdout` → vector / fluent-bit. Plus `examples/datadog.yaml`.
+- **`${VAR}` expansion in configs** — environment-variable references
+  anywhere in the YAML are substituted at load time, so API keys and SASL
+  passwords stay out of the file. Unset references are left verbatim
+  (visible, never a silent empty string); bare `$VAR` is untouched.
 - **`rdstail cost-estimate`** — project *your* fleet's monthly log volume
   from `DescribeDBLogFiles` metadata (free; no log data downloaded) and price
   the CloudWatch export path against the rdstail path. Works from a config
