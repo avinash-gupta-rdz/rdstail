@@ -57,14 +57,14 @@ audience.
   with checksum verification.
 - deb/rpm via nfpm when the first request lands.
 
-### 2. `rdstail init` — from zero to a working config interactively
+### 2. ~~`rdstail init` — from zero to a working config interactively~~ — ✅ shipped
 
-Today the quickstart asks the user to hand-write YAML. Instead:
 `rdstail init` uses ambient AWS credentials to list RDS instances in the
 region, lets the user pick instances and a sink (S3 bucket picker / Kafka
-brokers / webhook URL / stdout), and writes a validated `rdstail.yaml` —
-then prints the exact next command (`rdstail run -c rdstail.yaml`). The
-wizard is the 5-minute claim made real for people who don't read docs.
+brokers / webhook URL / stdout), and writes a commented, validated
+`rdstail.yaml` — then prints the exact next commands (`iam-policy`,
+`validate --deep`, `run`). Degrades to manual entry without credentials.
+The wizard is the 5-minute claim made real for people who don't read docs.
 
 ### 3. ~~`rdstail iam-policy`~~ — ✅ shipped
 

@@ -38,6 +38,7 @@ func New() *cobra.Command {
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to YAML config (required for run/validate)")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level: debug|info|warn|error")
 
+	root.AddCommand(newInitCmd())
 	root.AddCommand(newRunCmd(&configPath, &logLevel))
 	root.AddCommand(newValidateCmd(&configPath, &logLevel))
 	root.AddCommand(newIAMPolicyCmd(&configPath))

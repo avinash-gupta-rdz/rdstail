@@ -110,7 +110,18 @@ You need Go 1.22+ and AWS credentials with the permissions in [IAM](#iam).
 # 1. Install
 go install github.com/avinash-gupta-rdz/rdstail/cmd/rdstail@latest
 
-# 2. Write the smallest possible config
+# 2. Let the wizard build the config from your live account:
+#    it lists your RDS instances, you pick instances + a sink, and a
+#    validated rdstail.yaml is written with the next commands printed.
+rdstail init
+
+# 3. Run
+rdstail run -c rdstail.yaml
+```
+
+Prefer to write the YAML yourself? The smallest possible config:
+
+```bash
 cat > rdstail.yaml <<'EOF'
 sources:
   - type: rds
@@ -135,13 +146,8 @@ runtime:
   start_from: end
 EOF
 
-# 3. Validate (schema only — no network)
-rdstail validate -c rdstail.yaml
-
-# 4. Deep-validate (hits AWS — confirms creds + bucket + instance)
-rdstail validate -c rdstail.yaml --deep
-
-# 5. Run
+rdstail validate -c rdstail.yaml          # schema only — no network
+rdstail validate -c rdstail.yaml --deep   # hits AWS: creds + bucket + instance
 rdstail run -c rdstail.yaml
 ```
 
@@ -277,6 +283,7 @@ running `goreleaser release` produces archives for `linux/amd64`,
 
 | Command | Description |
 |---|---|
+| `init [--region REGION] [-o rdstail.yaml]` | Interactive onboarding: lists your live RDS instances, you pick instances + a sink (S3 / Kafka / HTTP / stdout), and a commented, validated config is written. Falls back to manual entry without credentials. |
 | `tail -i INSTANCE --region REGION [--min-severity ERROR] [--format ndjson]` | Zero-config `tail -f` for one instance: engine auto-detected, raw lines to stdout, in-memory state (no resume). |
 | `run -c PATH` | Start the shipper. Blocks until SIGINT/SIGTERM. |
 | `validate -c PATH [--deep]` | Schema-only by default; `--deep` probes STS, RDS (one DescribeDBLogFiles per instance), S3 HeadBucket, HTTP HEAD, Kafka broker ping (with the sink's TLS/SASL settings), and the state-store. Non-zero exit on any probe failure. |

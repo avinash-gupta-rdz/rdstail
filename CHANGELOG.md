@@ -7,6 +7,12 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **`rdstail init`** — interactive onboarding: lists the RDS instances your
+  ambient credentials can see, you pick instances and a sink (S3 bucket
+  picker / Kafka / HTTP webhook / stdout), and a commented, validated
+  `rdstail.yaml` is written with the exact next commands printed
+  (`iam-policy`, `validate --deep`, `run`). Listing failures fall back to
+  manual entry; mixed-engine selections split into one source per engine.
 - **Integration recipes** — copy-paste paths from RDS logs to the tools you
   already run, in `docs/integrations/`: Datadog, Axiom, and Better Stack
   direct via the `http` sink (their intake APIs accept rdstail's batched
