@@ -1,0 +1,51 @@
+name: Bug report
+description: Something broke, dropped, duplicated, or stalled
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is a **security issue**, please email
+        the address in [SECURITY.md](../blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Config
+      description: >-
+        Your rdstail.yaml with secrets/ARNs redacted. Redact values, keep
+        structure — the shape of the config is usually the bug.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: >-
+        Relevant stderr output, ideally with `--log-level debug`. For delivery
+        issues, `rdstail dlq list --json` and the relevant `rdstail_*` metrics
+        help a lot.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: rdstail version
+      description: Output of `rdstail version`
+      placeholder: "rdstail v0.2.0 (commit abc1234, built 2026-07-01)"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS/arch, how it runs (systemd / Docker / K8s), engine + RDS or Aurora
+      placeholder: "linux/arm64, Docker, Aurora PostgreSQL 15, ap-south-1"
+    validations:
+      required: true

@@ -3,7 +3,9 @@
 What's next, and why. Items are evidence-backed candidates, not promises —
 priorities shift with real-world feedback. See [CHANGELOG.md](CHANGELOG.md)
 for what already shipped, and the README's [Non-goals](README.md#non-goals)
-for what will never be here.
+for what will never be here. This file tracks **engine/correctness** work;
+the adoption, usability, and use-case roadmap lives in
+[PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md).
 
 ## Gate to v1.0.0
 

@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new capability or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, skim the [non-goals](../blob/main/README.md#non-goals)
+        and the [product roadmap](../blob/main/PRODUCT_ROADMAP.md) — your idea
+        may already be planned (add a 👍 or a comment there) or explicitly
+        out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What are you trying to do, and what makes it painful today? Describe
+        the situation, not the solution — "I need RDS logs in X" beats
+        "add an X sink".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution (optional)
+      description: If you have a shape in mind — config sketch, CLI flag, sink type.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How do you solve this today (stdout → vector? custom script? not at all)?

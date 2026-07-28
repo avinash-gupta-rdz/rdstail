@@ -4,6 +4,8 @@
 > straight from the RDS API to **S3**, **Kafka**, or an **HTTP webhook**.
 > Single static binary. At-least-once. No CloudWatch in the middle.
 
+[![CI](https://github.com/avinash-gupta-rdz/rdstail/actions/workflows/ci.yml/badge.svg)](https://github.com/avinash-gupta-rdz/rdstail/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/avinash-gupta-rdz/rdstail)](https://goreportcard.com/report/github.com/avinash-gupta-rdz/rdstail)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
 [![Status](https://img.shields.io/badge/status-beta-orange.svg)](#status)
@@ -224,8 +226,9 @@ sqlite3 ./state.db "SELECT instance_id, log_file, substr(marker,1,20), updated_a
 ## Status
 
 **Beta.** All planned functionality is implemented and covered by unit + chaos
-tests (the chaos test verifies `delivered ⊇ source` under 30% sink-flap), and
-the full suite runs race-enabled in CI. See [CHANGELOG.md](CHANGELOG.md) for
+tests (the [chaos test](internal/pipeline/chaos_test.go) verifies
+`delivered ⊇ source` under 30% sink-flap), and the full suite runs
+race-enabled in CI. See [CHANGELOG.md](CHANGELOG.md) for
 what's landed since 0.1.0 — DLQ replay, adaptive polling, severity extraction
 and routing, batching, tag discovery with live refresh, Kafka TLS/SASL,
 `rdstail tail`, and more. Not yet burned in with a multi-day production soak —
