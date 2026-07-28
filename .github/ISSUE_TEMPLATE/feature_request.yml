@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Before filing, skim the [non-goals](../blob/main/README.md#non-goals)
-        and the [product roadmap](../blob/main/PRODUCT_ROADMAP.md) — your idea
+        and the [product roadmap](../blob/main/ROADMAP.md) — your idea
         may already be planned (add a 👍 or a comment there) or explicitly
         out of scope.
   - type: textarea

@@ -7,6 +7,14 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **`rdstail iam-policy`** — derive the least-privilege IAM policy from the
+  config itself: RDS log reads scoped to the configured instances (region
+  wildcard when tag discovery is used), `s3:PutObject` scoped to
+  bucket+prefix, KMS and `sts:AssumeRole` statements only when the config
+  uses them. `--deep` adds the `validate --deep` probe permissions,
+  `--terraform` emits an `aws_iam_policy_document` data source. Permissions
+  that belong on an assumed role in another account are reported as stderr
+  notes instead of being wrongly granted to the local principal.
 - **DLQ lifecycle commands** — `rdstail dlq list` (with `--json`),
   `rdstail dlq replay` (re-delivers parked batches; rows deleted only after a
   durable sink ACK; `--dry-run`, `--sink`, `--limit`), and

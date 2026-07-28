@@ -270,6 +270,7 @@ running `goreleaser release` produces archives for `linux/amd64`,
 | `tail -i INSTANCE --region REGION [--min-severity ERROR] [--format ndjson]` | Zero-config `tail -f` for one instance: engine auto-detected, raw lines to stdout, in-memory state (no resume). |
 | `run -c PATH` | Start the shipper. Blocks until SIGINT/SIGTERM. |
 | `validate -c PATH [--deep]` | Schema-only by default; `--deep` probes STS, RDS (one DescribeDBLogFiles per instance), S3 HeadBucket, HTTP HEAD, Kafka broker ping (with the sink's TLS/SASL settings), and the state-store. Non-zero exit on any probe failure. |
+| `iam-policy -c PATH [--deep] [--terraform]` | Print the least-privilege IAM policy this exact config needs — RDS reads scoped to your instances, S3 writes scoped to bucket+prefix, KMS/assume-role only when used. JSON to stdout; cross-account notes to stderr. `--terraform` emits an `aws_iam_policy_document`. |
 | `dlq list -c PATH [--sink NAME] [--limit N] [--json]` | Show dead-lettered batches, oldest first. `--json` emits one object per line including the full record payload. |
 | `dlq replay -c PATH [--sink NAME] [--limit N] [--dry-run]` | Re-deliver parked batches through the configured sinks. A row is deleted only after the sink durably ACKs; failures leave it in place, so replay is always safe to re-run. Non-zero exit if any batch failed. |
 | `dlq purge -c PATH --yes [--sink NAME \| --id N]` | Permanently drop parked batches **without** replaying. Refuses to run without `--yes`. |
@@ -534,7 +535,17 @@ has turned into "your data is parked, waiting for `rdstail dlq replay`".
 
 ## IAM
 
-Minimum IAM policy for the default setup (one S3 sink, same account):
+Don't hand-assemble this — generate the least-privilege policy for your
+exact config:
+
+```bash
+rdstail iam-policy -c rdstail.yaml            # policy JSON, scoped to your instances/bucket
+rdstail iam-policy -c rdstail.yaml --deep     # + the s3:ListBucket probe `validate --deep` uses
+rdstail iam-policy -c rdstail.yaml --terraform # as an aws_iam_policy_document
+```
+
+For reference, the minimum policy for the default setup (one S3 sink, same
+account):
 
 ```json
 {

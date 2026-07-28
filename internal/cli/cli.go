@@ -40,6 +40,7 @@ func New() *cobra.Command {
 
 	root.AddCommand(newRunCmd(&configPath, &logLevel))
 	root.AddCommand(newValidateCmd(&configPath, &logLevel))
+	root.AddCommand(newIAMPolicyCmd(&configPath))
 	root.AddCommand(newDLQCmd(&configPath, &logLevel))
 	root.AddCommand(newDiscoverCmd(&configPath, &logLevel))
 	root.AddCommand(newTailCmd(&logLevel))

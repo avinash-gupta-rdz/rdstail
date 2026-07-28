@@ -9,7 +9,7 @@ never drop a log line*." Correctness beats features.
 1. **Open an issue first** for anything non-trivial — a bug report, or a
    short proposal for a feature. It saves you writing code that conflicts
    with the [non-goals](README.md#non-goals) or the
-   [roadmap](PRODUCT_ROADMAP.md).
+   [roadmap](ROADMAP.md).
 2. Small fixes (typos, docs, obvious bugs) can go straight to a PR.
 
 ## Development
