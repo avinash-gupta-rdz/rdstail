@@ -92,6 +92,40 @@ func TestDiscoverInstances_TagAndEngineFiltering(t *testing.T) {
 	}
 }
 
+func TestListInstances_NoTagFilter(t *testing.T) {
+	api := &mockDiscoveryAPI{pages: []*awsrds.DescribeDBInstancesOutput{
+		{
+			DBInstances: []rdstypes.DBInstance{
+				db("pg-1", "postgres", "available", nil),
+				db("oracle-1", "oracle-ee", "available", nil),
+			},
+			Marker: aws.String("page2"),
+		},
+		{
+			DBInstances: []rdstypes.DBInstance{
+				db("mysql-1", "mysql", "available", map[string]string{"any": "tag"}),
+			},
+		},
+	}}
+	found, err := rdssrc.ListInstances(context.Background(), api, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Everything supported, regardless of tags; oracle skipped; sorted.
+	if len(found) != 2 || found[0].ID != "mysql-1" || found[1].ID != "pg-1" {
+		t.Fatalf("unexpected instances: %+v", found)
+	}
+
+	api.calls = 0
+	found, err = rdssrc.ListInstances(context.Background(), api, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].ID != "pg-1" {
+		t.Fatalf("engine filter wrong: %+v", found)
+	}
+}
+
 func TestDiscoverInstances_RequiresTags(t *testing.T) {
 	if _, err := rdssrc.DiscoverInstances(context.Background(), &mockDiscoveryAPI{}, rdssrc.DiscoverFilter{}); err == nil {
 		t.Fatal("expected error for empty tag filter")

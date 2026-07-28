@@ -73,6 +73,16 @@ billed. At 1 TB/mo the CloudWatch path passes $500 while rdstail stays under
 $15. Cheaper still with S3 lifecycle rules (Glacier IR at $0.004/GB-mo vs
 CloudWatch's $0.03).
 
+Don't take the worked example's word for it — measure **your** fleet:
+
+```bash
+rdstail cost-estimate --region us-east-1     # every RDS instance in the region, no config needed
+```
+
+reads your instances' actual log-file sizes (free — no log data is
+downloaded), projects a month, and prints your CloudWatch bill next to your
+rdstail bill.
+
 **When CloudWatch is worth it anyway:** you actively use Logs Insights
 queries, metric filters, or CloudWatch alarms on these logs. rdstail moves
 logs; it deliberately doesn't replace those features (see
@@ -271,6 +281,7 @@ running `goreleaser release` produces archives for `linux/amd64`,
 | `run -c PATH` | Start the shipper. Blocks until SIGINT/SIGTERM. |
 | `validate -c PATH [--deep]` | Schema-only by default; `--deep` probes STS, RDS (one DescribeDBLogFiles per instance), S3 HeadBucket, HTTP HEAD, Kafka broker ping (with the sink's TLS/SASL settings), and the state-store. Non-zero exit on any probe failure. |
 | `iam-policy -c PATH [--deep] [--terraform]` | Print the least-privilege IAM policy this exact config needs — RDS reads scoped to your instances, S3 writes scoped to bucket+prefix, KMS/assume-role only when used. JSON to stdout; cross-account notes to stderr. `--terraform` emits an `aws_iam_policy_document`. |
+| `cost-estimate [--region REGION [-i INSTANCE]... \| -c PATH] [--json]` | Project *your* fleet's monthly log volume from `DescribeDBLogFiles` metadata (free; nothing downloaded) and price the CloudWatch export path against the rdstail path. Works with no config file — point it at a region. Prices overridable via flags. |
 | `dlq list -c PATH [--sink NAME] [--limit N] [--json]` | Show dead-lettered batches, oldest first. `--json` emits one object per line including the full record payload. |
 | `dlq replay -c PATH [--sink NAME] [--limit N] [--dry-run]` | Re-deliver parked batches through the configured sinks. A row is deleted only after the sink durably ACKs; failures leave it in place, so replay is always safe to re-run. Non-zero exit if any batch failed. |
 | `dlq purge -c PATH --yes [--sink NAME \| --id N]` | Permanently drop parked batches **without** replaying. Refuses to run without `--yes`. |

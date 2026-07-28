@@ -42,6 +42,21 @@ func DiscoverInstances(ctx context.Context, api DiscoveryAPI, filter DiscoverFil
 	if len(filter.Tags) == 0 {
 		return nil, fmt.Errorf("rds discover: at least one tag is required")
 	}
+	return listInstances(ctx, api, filter.Engine, filter.Tags)
+}
+
+// ListInstances lists every rdstail-supported RDS instance in the account's
+// region (paginated), sorted by ID — no tag filter. engineFilter ("" == any)
+// filters on the normalised engine name.
+func ListInstances(ctx context.Context, api DiscoveryAPI, engineFilter string) ([]DiscoveredInstance, error) {
+	return listInstances(ctx, api, engineFilter, nil)
+}
+
+// listInstances pages through DescribeDBInstances, keeping instances that pass
+// the engine filter ("" == any) and tag filter (nil == any; otherwise AND
+// semantics). Instances whose engine has no rdstail support (oracle,
+// sqlserver, ...) are skipped.
+func listInstances(ctx context.Context, api DiscoveryAPI, engineFilter string, tagFilter map[string]string) ([]DiscoveredInstance, error) {
 	var out []DiscoveredInstance
 	var marker *string
 	for {
@@ -54,15 +69,17 @@ func DiscoverInstances(ctx context.Context, api DiscoveryAPI, filter DiscoverFil
 			if engine == "" {
 				continue // unsupported engine
 			}
-			if filter.Engine != "" && engine != filter.Engine {
+			if engineFilter != "" && engine != engineFilter {
 				continue
 			}
-			tags := map[string]string{}
-			for _, t := range db.TagList {
-				tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
-			}
-			if !tagsMatch(filter.Tags, tags) {
-				continue
+			if tagFilter != nil {
+				tags := map[string]string{}
+				for _, t := range db.TagList {
+					tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
+				}
+				if !tagsMatch(tagFilter, tags) {
+					continue
+				}
 			}
 			out = append(out, DiscoveredInstance{
 				ID:     aws.ToString(db.DBInstanceIdentifier),

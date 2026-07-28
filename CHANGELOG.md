@@ -7,6 +7,12 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **`rdstail cost-estimate`** — project *your* fleet's monthly log volume
+  from `DescribeDBLogFiles` metadata (free; no log data downloaded) and price
+  the CloudWatch export path against the rdstail path. Works from a config
+  (`-c`, including tag discovery) or with no config at all
+  (`--region [-i INSTANCE]...`). `--json` for scripting; list prices and the
+  compression ratio overridable via flags.
 - **`rdstail iam-policy`** — derive the least-privilege IAM policy from the
   config itself: RDS log reads scoped to the configured instances (region
   wildcard when tag discovery is used), `s3:PutObject` scoped to

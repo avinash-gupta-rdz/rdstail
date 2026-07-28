@@ -73,13 +73,14 @@ IAM policy JSON it needs — including the conditional add-ons (KMS,
 assume-role, deep-validate probes) assembled by hand before. Landed as
 `rdstail iam-policy -c config.yaml [--deep] [--terraform]`.
 
-### 4. `rdstail cost-estimate` — the sales pitch as a command
+### 4. ~~`rdstail cost-estimate`~~ — ✅ shipped
 
-The README's cost table is hypothetical. Make it personal: read the fleet's
-actual log volume via `DescribeDBLogFiles` (sizes are free to read), project
-a month, and print *your* CloudWatch-export cost next to *your* rdstail cost.
-This is the screenshot people paste into Slack to justify adopting the tool —
-it converts the strongest argument (money) from a claim into evidence.
+The README's cost table is hypothetical; this makes it personal: read the
+fleet's actual log volume via `DescribeDBLogFiles` (sizes are free to read),
+project a month, and print *your* CloudWatch-export cost next to *your*
+rdstail cost — the screenshot people paste into Slack to justify adopting the
+tool. Landed as `rdstail cost-estimate [--region R [-i ID]... | -c config]
+[--json]`, no config file required.
 
 ### 5. Integration recipes for the tools people already use
 
