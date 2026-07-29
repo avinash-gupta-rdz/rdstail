@@ -5,6 +5,17 @@ All notable changes to rdstail. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **Incident-time toolkit** — `rdstail tail` grows `--since 1h` (replay a
+  time window before following; rotated files outside the window are never
+  downloaded), `--grep 'deadlock|timeout'` (RE2 filter on the raw line), and
+  a repeatable `-i` to tail a primary and its replicas together. New
+  **`rdstail dump`** command: one-shot fetch-and-exit of a time window
+  (`dump -i my-db --since 24h -o incident-4231.ndjson.gz`) — NDJSON to
+  stdout or a file, gzipped when the path ends in `.gz`, record count to
+  stderr. No config, no state, read-only IAM.
+
 ## [0.3.0] — 2026-10-08
 
 ### Added

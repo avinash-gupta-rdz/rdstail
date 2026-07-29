@@ -100,6 +100,10 @@ right now — no config file:
 rdstail tail -i my-db-1 --region ap-south-1
 # only errors:
 rdstail tail -i my-db-1 --region ap-south-1 --min-severity ERROR
+# replay the last hour, filtered, primary + replica together:
+rdstail tail -i my-db-1 -i my-db-1-replica --since 1h --grep 'deadlock|timeout' --region ap-south-1
+# one-shot export for the postmortem / support ticket:
+rdstail dump -i my-db-1 --since 24h -o incident-4231.ndjson.gz --region ap-south-1
 ```
 
 ## Quick start — shipping (5 minutes)
@@ -334,7 +338,8 @@ make build        # produces bin/rdstail
 | Command | Description |
 |---|---|
 | `init [--region REGION] [-o rdstail.yaml]` | Interactive onboarding: lists your live RDS instances, you pick instances + a sink (S3 / Kafka / HTTP / stdout), and a commented, validated config is written. Falls back to manual entry without credentials. |
-| `tail -i INSTANCE --region REGION [--min-severity ERROR] [--format ndjson]` | Zero-config `tail -f` for one instance: engine auto-detected, raw lines to stdout, in-memory state (no resume). |
+| `tail -i INSTANCE [-i INSTANCE]... --region REGION [--since 1h] [--grep 'deadlock\|timeout'] [--min-severity ERROR] [--format ndjson]` | Zero-config `tail -f`: engine auto-detected, raw lines to stdout, in-memory state (no resume). `-i` repeats to tail a primary and its replicas together; `--since 1h` replays the last hour before following; `--grep` filters by RE2 regex. |
+| `dump -i INSTANCE [-i INSTANCE]... [--since 24h] [--grep RE] [-o incident.ndjson.gz]` | One-shot fetch-and-exit for postmortems and tickets: pulls the time window, writes NDJSON (gzipped when `-o` ends in `.gz`, stdout by default), prints a record count to stderr. No pipeline, no state, read-only IAM. |
 | `run -c PATH` | Start the shipper. Blocks until SIGINT/SIGTERM. |
 | `validate -c PATH [--deep]` | Schema-only by default; `--deep` probes STS, RDS (one DescribeDBLogFiles per instance), S3 HeadBucket, HTTP HEAD, Kafka broker ping (with the sink's TLS/SASL settings), and the state-store. Non-zero exit on any probe failure. |
 | `iam-policy -c PATH [--deep] [--terraform]` | Print the least-privilege IAM policy this exact config needs — RDS reads scoped to your instances, S3 writes scoped to bucket+prefix, KMS/assume-role only when used. JSON to stdout; cross-account notes to stderr. `--terraform` emits an `aws_iam_policy_document`. |

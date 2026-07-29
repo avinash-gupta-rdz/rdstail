@@ -97,14 +97,15 @@ config expansion so the recipes' API keys come from the environment.
 
 ## Next — new use cases on the same engine (v1.0 → v1.2)
 
-### 6. Incident-time toolkit: rdstail for humans, not just pipelines
+### 6. ~~Incident-time toolkit: rdstail for humans, not just pipelines~~ — ✅ shipped
 
 `rdstail tail` proved there's a second product inside: an *interactive* RDS
-log tool needing no config, no state, no sinks. Extend it:
+log tool needing no config, no state, no sinks. Landed:
 
-- `rdstail tail --since 1h --grep 'deadlock|timeout'` — start from a point in
-  time, filter server-side of your eyeballs. Multiple `-i` flags to tail a
-  primary and its replica together.
+- `rdstail tail --since 1h --grep 'deadlock|timeout'` — replay a window
+  before following (files rotated out before the window are never
+  downloaded), filter server-side of your eyeballs. Multiple `-i` flags tail
+  a primary and its replica together.
 - `rdstail dump -i my-db --since 24h -o incident-4231.ndjson.gz` — one-shot
   fetch-and-exit for postmortems, support tickets, and "attach the DB logs to
   the Jira." No pipeline, no S3, no IAM beyond read.

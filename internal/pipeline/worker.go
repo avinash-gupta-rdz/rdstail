@@ -33,6 +33,7 @@ type InstanceWorker struct {
 	maxBatchRecords int           // coalesce up to this many records per write; 0 → per-chunk
 	drainSem        chan struct{} // global bound on concurrent file drains; nil → serial
 	startFrom       string
+	minFileTime     time.Time // skip files last written before this; zero → all files
 	lagGauge        *prometheus.GaugeVec
 	pollGauge       *prometheus.GaugeVec
 	stateOpsCounter *prometheus.CounterVec
@@ -52,6 +53,7 @@ type InstanceWorkerOpts struct {
 	MaxBatchRecords int           // cross-chunk batching threshold; 0 → write per chunk
 	DrainSem        chan struct{} // shared semaphore bounding concurrent file drains across ALL workers; nil → serial per instance
 	StartFrom       string        // config.StartFromBeginning | StartFromEnd
+	MinFileTime     time.Time     // skip log files whose LastWritten predates this (used by tail --since); zero → no file skipped
 	LagGauge        *prometheus.GaugeVec
 	PollGauge       *prometheus.GaugeVec
 	StateOpsCounter *prometheus.CounterVec
@@ -95,6 +97,7 @@ func NewInstanceWorker(opts InstanceWorkerOpts) (*InstanceWorker, error) {
 		maxBatchRecords: opts.MaxBatchRecords,
 		drainSem:        opts.DrainSem,
 		startFrom:       opts.StartFrom,
+		minFileTime:     opts.MinFileTime,
 		lagGauge:        opts.LagGauge,
 		pollGauge:       opts.PollGauge,
 		stateOpsCounter: opts.StateOpsCounter,
@@ -169,6 +172,7 @@ func (w *InstanceWorker) pollOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("discover: %w", err)
 	}
+	files = w.eligibleFiles(files)
 
 	if w.drainSem == nil || len(files) < 2 {
 		shipped := 0
@@ -214,6 +218,24 @@ func (w *InstanceWorker) pollOnce(ctx context.Context) (int, error) {
 	}
 	wg.Wait()
 	return int(shipped.Load()), ctx.Err()
+}
+
+// eligibleFiles drops files rotated out before minFileTime — they cannot
+// receive new writes, so draining them would only ship pre-window data. Files
+// without a LastWritten timestamp are kept: never skip data on missing
+// metadata.
+func (w *InstanceWorker) eligibleFiles(files []rdssrc.FileMeta) []rdssrc.FileMeta {
+	if w.minFileTime.IsZero() {
+		return files
+	}
+	kept := files[:0]
+	for _, f := range files {
+		if lw := f.LastWritten(); !lw.IsZero() && lw.Before(w.minFileTime) {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept
 }
 
 // observeLag updates the ingestion-lag gauge for this file if configured.

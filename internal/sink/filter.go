@@ -2,7 +2,9 @@ package sink
 
 import (
 	"context"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/avinash-gupta-rdz/rdstail/pkg/logrecord"
 )
@@ -90,4 +92,52 @@ func (d *filterDecorator) Write(ctx context.Context, records []logrecord.LogReco
 		return nil
 	}
 	return d.inner.Write(ctx, kept)
+}
+
+// keepDecorator wraps a sink with an arbitrary per-record predicate. Same ACK
+// semantics as filterDecorator: a fully-filtered batch ACKs immediately.
+type keepDecorator struct {
+	inner Sink
+	keep  func(*logrecord.LogRecord) bool
+}
+
+func (d *keepDecorator) Name() string { return d.inner.Name() }
+func (d *keepDecorator) Type() string { return d.inner.Type() }
+func (d *keepDecorator) Close() error { return d.inner.Close() }
+
+func (d *keepDecorator) Write(ctx context.Context, records []logrecord.LogRecord) error {
+	var kept []logrecord.LogRecord
+	for i := range records {
+		if d.keep(&records[i]) {
+			kept = append(kept, records[i])
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return d.inner.Write(ctx, kept)
+}
+
+// WithGrep wraps s so only records whose Message matches re reach it.
+// A nil re returns s unchanged.
+func WithGrep(s Sink, re *regexp.Regexp) Sink {
+	if re == nil {
+		return s
+	}
+	return &keepDecorator{inner: s, keep: func(r *logrecord.LogRecord) bool {
+		return re.MatchString(r.Message)
+	}}
+}
+
+// WithSince wraps s so only records with Timestamp at or after cutoff reach
+// it. Records whose timestamp could not be parsed carry the fetch time, which
+// is always inside the window — so continuation lines still flow. A zero
+// cutoff returns s unchanged.
+func WithSince(s Sink, cutoff time.Time) Sink {
+	if cutoff.IsZero() {
+		return s
+	}
+	return &keepDecorator{inner: s, keep: func(r *logrecord.LogRecord) bool {
+		return !r.Timestamp.Before(cutoff)
+	}}
 }
