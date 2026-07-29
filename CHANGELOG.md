@@ -7,6 +7,18 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **Compliance archive pack** — audit logging productised end to end:
+  MySQL/MariaDB audit-plugin files (`audit/server_audit.log*`) are ingested
+  behind a per-source `include_audit: true` opt-in (off by default — audit
+  logs can be high-volume) with the event timestamp parsed from the plugin's
+  CSV; pgAudit entries (which always flowed inside `postgresql.log`) now get
+  their classification CSV lifted into a structured `audit` record field
+  (`type`, `class`, `command`, `object_type`, `object_name` — the statement
+  stays verbatim in `message`); and
+  [`docs/compliance/audit-logs-immutable-s3.md`](docs/compliance/audit-logs-immutable-s3.md)
+  is the assessor-ready recipe: engine setup, S3 Object Lock + lifecycle
+  topology, and an evidence guide mapping rdstail's guarantees to
+  SOC 2 / PCI-DSS control language. Plus `examples/audit-archive.yaml`.
 - **Incident-time toolkit** — `rdstail tail` grows `--since 1h` (replay a
   time window before following; rotated files outside the window are never
   downloaded), `--grep 'deadlock|timeout'` (RE2 filter on the raw line), and

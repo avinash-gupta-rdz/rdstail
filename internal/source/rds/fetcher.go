@@ -65,11 +65,12 @@ type Fetcher struct {
 
 // FetcherOpts configure NewFetcher. Clock and Observer are optional.
 type FetcherOpts struct {
-	API        RDSAPI
-	InstanceID string
-	Engine     string
-	Clock      func() time.Time
-	Observer   APICallObserver
+	API          RDSAPI
+	InstanceID   string
+	Engine       string
+	IncludeAudit bool // ingest MySQL/MariaDB audit-plugin files (audit/server_audit.log*)
+	Clock        func() time.Time
+	Observer     APICallObserver
 }
 
 // NewFetcher constructs a Fetcher. API and InstanceID are required.
@@ -88,7 +89,7 @@ func NewFetcher(opts FetcherOpts) (*Fetcher, error) {
 		api:        opts.API,
 		instanceID: opts.InstanceID,
 		engine:     opts.Engine,
-		classifier: NewClassifier(opts.Engine),
+		classifier: NewClassifier(opts.Engine, opts.IncludeAudit),
 		parser:     parse.ForEngine(opts.Engine),
 		clock:      clock,
 		observe:    opts.Observer,
@@ -242,6 +243,7 @@ func (f *Fetcher) parseRecords(logFile, data string) []logrecord.LogRecord {
 		if f.parser != nil {
 			meta := f.parser.Parse(line)
 			rec.Severity = meta.Severity
+			rec.Audit = meta.Audit
 			switch {
 			case !meta.Timestamp.IsZero():
 				rec.Timestamp = meta.Timestamp

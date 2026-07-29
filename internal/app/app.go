@@ -257,10 +257,11 @@ func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, er
 		}
 		for _, inst := range src.Instances {
 			add(pipeline.InstanceSpec{
-				InstanceID: inst,
-				Engine:     src.Engine,
-				Region:     src.Region,
-				API:        client,
+				InstanceID:   inst,
+				Engine:       src.Engine,
+				Region:       src.Region,
+				IncludeAudit: src.IncludeAudit,
+				API:          client,
 			})
 		}
 		if src.Discover != nil {
@@ -284,10 +285,11 @@ func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, er
 					r.lg.Info("discovered instance", "instance", d.ID, "engine", d.Engine, "status", d.Status, "region", src.Region)
 				}
 				add(pipeline.InstanceSpec{
-					InstanceID: d.ID,
-					Engine:     d.Engine,
-					Region:     src.Region,
-					API:        client,
+					InstanceID:   d.ID,
+					Engine:       d.Engine,
+					Region:       src.Region,
+					IncludeAudit: src.IncludeAudit,
+					API:          client,
 				})
 			}
 		}

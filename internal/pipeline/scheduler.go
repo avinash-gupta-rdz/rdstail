@@ -20,10 +20,11 @@ import (
 
 // InstanceSpec identifies one RDS instance the pipeline should poll.
 type InstanceSpec struct {
-	InstanceID string
-	Engine     string
-	Region     string
-	API        rdssrc.RDSAPI
+	InstanceID   string
+	Engine       string
+	Region       string
+	IncludeAudit bool // ingest MySQL/MariaDB audit-plugin files for this instance
+	API          rdssrc.RDSAPI
 }
 
 // Scheduler owns the lifecycle of per-instance InstanceWorkers.
@@ -148,10 +149,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 		}
 		fetcher, err := rdssrc.NewFetcher(rdssrc.FetcherOpts{
-			API:        inst.API,
-			InstanceID: inst.InstanceID,
-			Engine:     inst.Engine,
-			Observer:   observer,
+			API:          inst.API,
+			InstanceID:   inst.InstanceID,
+			Engine:       inst.Engine,
+			IncludeAudit: inst.IncludeAudit,
+			Observer:     observer,
 		})
 		if err != nil {
 			return fmt.Errorf("build fetcher for %s: %w", inst.InstanceID, err)

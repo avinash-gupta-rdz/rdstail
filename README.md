@@ -370,6 +370,15 @@ arrival) live in [`docs/integrations/`](docs/integrations/README.md):
 | [Datadog](docs/integrations/datadog.md), [Axiom](docs/integrations/axiom.md), [Better Stack](docs/integrations/betterstack.md) | `http` sink, direct — their intake APIs accept rdstail's batched JSON as-is |
 | [Splunk HEC](docs/integrations/splunk.md), [Grafana Loki](docs/integrations/loki.md), [Elasticsearch/OpenSearch](docs/integrations/elastic.md) | `stdout` → [vector](docs/integrations/vector.md) or [fluent-bit](docs/integrations/fluent-bit.md) speaking the backend's protocol |
 
+## Compliance
+
+Need the audit trail in WORM storage for SOC 2 / PCI-DSS / HIPAA?
+[**RDS audit logs to immutable S3 — without the Lambda pipeline**](docs/compliance/audit-logs-immutable-s3.md)
+is the end-to-end recipe: pgAudit / MariaDB audit plugin setup, an S3 Object
+Lock + lifecycle topology, the `include_audit` opt-in, and an evidence guide
+mapping rdstail's delivery guarantees (checkpoint-after-ACK, `batch_id`
+dedupe, DLQ-never-drops) to control language an assessor can verify.
+
 ## Configuration
 
 See `examples/` for a per-topology catalogue:
@@ -384,6 +393,7 @@ See `examples/` for a per-topology catalogue:
 | `examples/fanout.yaml` | Every record written to both S3 **and** Kafka. |
 | `examples/discover.yaml` | Tag-based discovery — no hand-maintained instance list. |
 | `examples/stdout.yaml` | Pipe integration — NDJSON to stdout for vector/fluent-bit/jq. |
+| `examples/audit-archive.yaml` | Audit logs → immutable S3 (Object Lock) — see the [compliance guide](docs/compliance/audit-logs-immutable-s3.md). |
 
 ### Full config reference
 
@@ -403,6 +413,10 @@ sources:                       # required; ≥ 1
       refresh_interval: 5m     # re-discover on this cadence and start/stop
                                # workers to match the fleet; 0 = startup-only
     assume_role: ""            # optional role ARN for cross-account
+    include_audit: false       # MySQL/MariaDB only: also ingest audit-plugin
+                               # files (audit/server_audit.log*). pgAudit
+                               # (postgres) always flows — it lives in
+                               # postgresql.log.
 
 sinks:                         # required; ≥ 1; every sink receives every record
   - name: s3-primary           # unique per config
