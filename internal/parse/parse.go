@@ -9,16 +9,20 @@
 package parse
 
 import (
+	"encoding/csv"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/avinash-gupta-rdz/rdstail/pkg/logrecord"
 )
 
 // Meta is the metadata extracted from one log line. Zero-value fields mean
 // "not present on this line".
 type Meta struct {
-	Timestamp time.Time // server-side event time (UTC); zero if not found
-	Severity  string    // canonical upper-case token (ERROR, WARNING, ...); "" if not found
+	Timestamp time.Time        // server-side event time (UTC); zero if not found
+	Severity  string           // canonical upper-case token (ERROR, WARNING, ...); "" if not found
+	Audit     *logrecord.Audit // pgAudit fields when the line is an AUDIT: entry; nil otherwise
 }
 
 // Parser extracts Meta from a single raw log line.
@@ -59,21 +63,62 @@ var pgLine = regexp.MustCompile(
 type postgresParser struct{}
 
 func (postgresParser) Parse(line string) Meta {
-	m := pgLine.FindStringSubmatch(line)
-	if m == nil {
+	loc := pgLine.FindStringSubmatchIndex(line)
+	if loc == nil {
 		return Meta{}
 	}
+	group := func(i int) string {
+		if loc[2*i] < 0 {
+			return ""
+		}
+		return line[loc[2*i]:loc[2*i+1]]
+	}
 	var meta Meta
-	meta.Severity = m[4]
+	meta.Severity = group(4)
 	// Fast path for the overwhelmingly common case: RDS logs in UTC. Other
 	// zone abbreviations are ambiguous; leave the timestamp unset rather than
 	// guess an offset.
-	if m[3] == "UTC" {
-		if ts, err := time.Parse("2006-01-02 15:04:05", m[1]); err == nil {
+	if group(3) == "UTC" {
+		if ts, err := time.Parse("2006-01-02 15:04:05", group(1)); err == nil {
 			meta.Timestamp = ts.UTC()
 		}
 	}
+	// pgAudit entries put a CSV payload right after the prefix:
+	//   ...:[123]:LOG:  AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.accounts,SELECT ...,<not logged>
+	// Anchoring on the prefix end (not a substring search) keeps statements
+	// that merely contain "AUDIT: " from being misread.
+	rest := strings.TrimLeft(line[loc[1]:], " ")
+	if body, ok := strings.CutPrefix(rest, "AUDIT: "); ok {
+		meta.Audit = parsePGAudit(body)
+	}
 	return meta
+}
+
+// parsePGAudit lifts the classification fields from a pgAudit CSV payload:
+// AUDIT_TYPE,STATEMENT_ID,SUBSTATEMENT_ID,CLASS,COMMAND,OBJECT_TYPE,OBJECT_NAME,STATEMENT,PARAMETER.
+// The statement itself is deliberately not extracted — it stays verbatim in
+// Message. Returns nil when the payload doesn't parse as pgAudit CSV.
+func parsePGAudit(body string) *logrecord.Audit {
+	r := csv.NewReader(strings.NewReader(body))
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+	fields, err := r.Read()
+	if err != nil || len(fields) < 5 {
+		return nil
+	}
+	a := &logrecord.Audit{
+		Type:    fields[0],
+		Class:   fields[3],
+		Command: fields[4],
+	}
+	if a.Type != "SESSION" && a.Type != "OBJECT" {
+		return nil
+	}
+	if len(fields) >= 7 {
+		a.ObjectType = fields[5]
+		a.ObjectName = fields[6]
+	}
+	return a
 }
 
 // --- MySQL / MariaDB ---
@@ -97,6 +142,10 @@ var (
 		`^(\d{4}-\d{2}-\d{2}) +(\d{1,2}:\d{2}:\d{2}) +\d+ +\[([A-Za-z]+)\]`)
 	slowTimeLine = regexp.MustCompile(
 		`^# Time: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))`)
+	// MariaDB audit plugin (server_audit.log, ingested behind include_audit):
+	//   20260729 06:00:00,ip-10-0-0-1,app,10.0.0.9,64,1234,QUERY,mydb,'SELECT 1',0
+	// Only the timestamp is lifted; the CSV payload stays verbatim in Message.
+	serverAuditLine = regexp.MustCompile(`^(\d{8}) +(\d{2}:\d{2}:\d{2}),`)
 )
 
 type mysqlParser struct{}
@@ -122,6 +171,14 @@ func (mysqlParser) Parse(line string) Meta {
 	if m := slowTimeLine.FindStringSubmatch(line); m != nil {
 		var meta Meta
 		if ts, err := time.Parse(time.RFC3339Nano, m[1]); err == nil {
+			meta.Timestamp = ts.UTC()
+		}
+		return meta
+	}
+	if m := serverAuditLine.FindStringSubmatch(line); m != nil {
+		var meta Meta
+		// server_audit logs server-local time; RDS instances run UTC.
+		if ts, err := time.Parse("20060102 15:04:05", m[1]+" "+m[2]); err == nil {
 			meta.Timestamp = ts.UTC()
 		}
 		return meta

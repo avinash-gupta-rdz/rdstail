@@ -1,8 +1,11 @@
 package parse
 
 import (
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/avinash-gupta-rdz/rdstail/pkg/logrecord"
 )
 
 func ts(s string) time.Time {
@@ -123,5 +126,52 @@ func TestMySQLAndMariaDB(t *testing.T) {
 	}
 	if ForEngine("oracle") != nil {
 		t.Fatal("unknown engine must return nil parser")
+	}
+}
+
+func TestPostgresParser_PGAudit(t *testing.T) {
+	p := ForEngine("postgres")
+
+	line := `2026-07-21 10:00:00 UTC:10.0.0.9(5432):app@mydb:[12345]:LOG:  AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.accounts,"SELECT * FROM accounts, users",<not logged>`
+	got := p.Parse(line)
+	if got.Severity != "LOG" {
+		t.Fatalf("severity: got %q", got.Severity)
+	}
+	want := &logrecord.Audit{
+		Type: "SESSION", Class: "READ", Command: "SELECT",
+		ObjectType: "TABLE", ObjectName: "public.accounts",
+	}
+	if !reflect.DeepEqual(got.Audit, want) {
+		t.Fatalf("audit: got %+v, want %+v", got.Audit, want)
+	}
+
+	// DDL entry without object fields still yields type/class/command.
+	ddl := `2026-07-21 10:00:00 UTC::@:[389]:LOG:  AUDIT: SESSION,2,1,DDL,CREATE TABLE,,,CREATE TABLE t(i int),<none>`
+	if a := p.Parse(ddl).Audit; a == nil || a.Command != "CREATE TABLE" || a.ObjectName != "" {
+		t.Fatalf("ddl audit: got %+v", a)
+	}
+
+	// A statement merely containing "AUDIT: " must not be misread: the
+	// payload is anchored to the prefix end, and non-pgAudit CSV yields nil.
+	trap := `2026-07-21 10:00:00 UTC:10.0.0.9(5432):app@mydb:[12345]:ERROR:  relation "AUDIT: SESSION" does not exist`
+	if a := p.Parse(trap).Audit; a != nil {
+		t.Fatalf("expected nil audit for non-audit line, got %+v", a)
+	}
+
+	// Plain lines keep working, audit nil.
+	if a := p.Parse(`2026-07-21 10:00:00 UTC::@:[389]:LOG:  checkpoint starting`).Audit; a != nil {
+		t.Fatalf("expected nil audit, got %+v", a)
+	}
+}
+
+func TestMySQLParser_ServerAuditTimestamp(t *testing.T) {
+	p := ForEngine("mariadb")
+	got := p.Parse(`20260729 06:00:00,ip-10-0-0-1,app,10.0.0.9,64,1234,QUERY,mydb,'SELECT 1',0`)
+	want := time.Date(2026, 7, 29, 6, 0, 0, 0, time.UTC)
+	if !got.Timestamp.Equal(want) {
+		t.Fatalf("timestamp: got %v, want %v", got.Timestamp, want)
+	}
+	if got.Severity != "" || got.Audit != nil {
+		t.Fatalf("server_audit lines carry no severity/audit fields, got %+v", got)
 	}
 }

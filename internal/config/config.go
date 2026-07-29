@@ -41,6 +41,11 @@ type Source struct {
 	Instances  []string  `koanf:"instances" yaml:"instances"`
 	Discover   *Discover `koanf:"discover" yaml:"discover,omitempty"`
 	AssumeRole string    `koanf:"assume_role" yaml:"assume_role,omitempty"`
+	// IncludeAudit opts MySQL/MariaDB audit-plugin files
+	// (audit/server_audit.log*) into ingestion. Off by default — audit logs
+	// can be high-volume. No effect for postgres: pgAudit entries live inside
+	// postgresql.log and always flow.
+	IncludeAudit bool `koanf:"include_audit" yaml:"include_audit,omitempty"`
 }
 
 // Discover selects RDS instances by tag at startup instead of (or in addition

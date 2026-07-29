@@ -18,13 +18,16 @@ type LogFileClassifier interface {
 	FilenameContains() string
 }
 
-// NewClassifier returns the classifier for an engine name.
-func NewClassifier(engine string) LogFileClassifier {
+// NewClassifier returns the classifier for an engine name. includeAudit opts
+// MySQL/MariaDB audit-plugin files (audit/server_audit.log*) into ingestion —
+// off by default because audit logs can be high-volume. It has no effect for
+// postgres, whose pgAudit entries live inside postgresql.log and always flow.
+func NewClassifier(engine string, includeAudit bool) LogFileClassifier {
 	switch engine {
 	case config.EnginePostgres:
 		return postgresClassifier{}
 	case config.EngineMySQL, config.EngineMariaDB:
-		return mysqlClassifier{}
+		return mysqlClassifier{includeAudit: includeAudit}
 	default:
 		return allClassifier{}
 	}
@@ -42,11 +45,19 @@ func (postgresClassifier) FilenameContains() string { return "postgres" }
 
 // mysqlClassifier accepts MySQL/MariaDB error, slow-query, and general logs. The
 // RDS layout places them under error/, slowquery/, general/ directories; we
-// filter on basename to handle both RDS and Aurora's flat layouts.
-type mysqlClassifier struct{}
+// filter on basename to handle both RDS and Aurora's flat layouts. Audit-plugin
+// files are accepted only when includeAudit is set.
+type mysqlClassifier struct {
+	includeAudit bool
+}
 
-func (mysqlClassifier) Accepts(name string) bool {
+func (c mysqlClassifier) Accepts(name string) bool {
 	base := strings.ToLower(path.Base(name))
+	lower := strings.ToLower(name)
+	if c.includeAudit &&
+		(strings.HasPrefix(base, "server_audit.log") || strings.HasPrefix(lower, "audit/")) {
+		return true
+	}
 	switch {
 	case strings.HasPrefix(base, "mysql-error"),
 		strings.HasPrefix(base, "mysql-slowquery"),
@@ -58,7 +69,6 @@ func (mysqlClassifier) Accepts(name string) bool {
 		return true
 	}
 	// Fallback: names under the conventional directories.
-	lower := strings.ToLower(name)
 	if strings.HasPrefix(lower, "error/") ||
 		strings.HasPrefix(lower, "slowquery/") ||
 		strings.HasPrefix(lower, "general/") {

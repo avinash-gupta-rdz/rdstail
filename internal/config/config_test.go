@@ -14,6 +14,7 @@ sources:
     engine: postgres
     region: ap-south-1
     instances: [db-1, db-2]
+    include_audit: true
 
 sinks:
   - name: primary
@@ -62,6 +63,9 @@ func TestLoadAndValidate_Happy(t *testing.T) {
 	}
 	if cfg.Sinks[0].S3.MaxBytes != 5*1024*1024 {
 		t.Fatalf("expected default S3 max_bytes=5MB, got %d", cfg.Sinks[0].S3.MaxBytes)
+	}
+	if !cfg.Sources[0].IncludeAudit {
+		t.Fatal("include_audit did not round-trip")
 	}
 }
 

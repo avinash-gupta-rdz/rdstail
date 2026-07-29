@@ -1,0 +1,42 @@
+# Compliance archive: audit logs → immutable S3 (Object Lock).
+# Full walkthrough, bucket setup, and the SOC 2 / PCI-DSS evidence guide:
+# docs/compliance/audit-logs-immutable-s3.md
+sources:
+  # pgAudit entries live inside postgresql.log and always flow; rdstail
+  # additionally lifts the AUDIT: CSV classification fields (type, class,
+  # command, object) into the record's "audit" object.
+  - type: rds
+    engine: postgres
+    region: ap-south-1
+    instances:
+      - prod-pg-writer
+
+  # MySQL/MariaDB audit-plugin files (audit/server_audit.log*) are ingested
+  # only with this opt-in — audit logs can be high-volume.
+  - type: rds
+    engine: mariadb
+    region: ap-south-1
+    instances:
+      - prod-maria-writer
+    include_audit: true
+
+sinks:
+  - name: audit-archive
+    type: s3
+    s3:
+      # Bucket created with Object Lock enabled (see the doc) — objects are
+      # WORM-immutable for the retention period; rdstail needs no extra flags.
+      bucket: company-audit-archive
+      region: ap-south-1
+      prefix: rds-audit/
+      # SSE-KMS is typical for audit archives:
+      # kms_key_id: arn:aws:kms:ap-south-1:123456789012:key/abc-def
+
+state:
+  type: sqlite
+  path: /var/lib/rdstail/state.db
+
+runtime:
+  poll_interval: 30s
+  # Archive from the first byte available, not from the current tail:
+  start_from: beginning

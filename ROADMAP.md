@@ -113,27 +113,24 @@ log tool needing no config, no state, no sinks. Landed:
 This is the wedge use case: the on-call engineer who used `tail` during an
 incident is the same person who proposes the shipper to their team on Monday.
 
-### 7. Compliance archive pack (audit-log support, productised)
+### 7. ~~Compliance archive pack (audit-log support, productised)~~ — ✅ shipped
 
 Not "audit-log support" as a feature flag — a documented end-to-end recipe an
-assessor can read. AWS's own recommended pipeline for this is CloudWatch →
-subscription filter → Lambda → CSV → S3
-([AWS blog](https://aws.amazon.com/blogs/database/automate-postgresql-audit-log-extraction-and-analysis-with-amazon-s3/),
-[sample repo](https://github.com/aws-samples/sample-rds-pg-audit-log-s3)) —
-four moving parts and CloudWatch ingestion fees for what rdstail does in one
-binary. The work:
+assessor can read (AWS's own recommended pipeline is CloudWatch →
+subscription filter → Lambda → CSV → S3 — four moving parts and CloudWatch
+ingestion fees for what rdstail does in one binary). Landed:
 
-- MySQL/MariaDB audit-plugin files (`audit/server_audit.log*`) are currently
-  **rejected** by the classifier — accept them behind a per-source opt-in
-  (`include_audit: true`) since audit logs can be high-volume.
-- pgAudit lines already flow (they live in `postgresql.log`); extract the
-  `AUDIT:` CSV fields (session/object, command, object name) into structured
-  record fields the way severity is extracted today.
-- An **S3 Object Lock + lifecycle topology doc** for immutability, plus a
-  one-page "evidence guide" mapping rdstail's guarantees (at-least-once,
-  BatchID dedupe, DLQ-never-drops) to SOC 2 / PCI-DSS control language.
-  Title the doc what the buyer searches for: *"RDS audit logs to immutable
-  S3 — without the Lambda pipeline."*
+- MySQL/MariaDB audit-plugin files (`audit/server_audit.log*`) ingest behind
+  a per-source `include_audit: true` opt-in (audit logs can be high-volume),
+  with the event timestamp parsed from the plugin's CSV.
+- pgAudit `AUDIT:` CSV classification fields (type, class, command,
+  object type/name) are lifted into a structured `audit` record field the
+  way severity is extracted — the statement stays verbatim in `message`.
+- [`docs/compliance/audit-logs-immutable-s3.md`](docs/compliance/audit-logs-immutable-s3.md)
+  — *"RDS audit logs to immutable S3 — without the Lambda pipeline"*: engine
+  setup, Object Lock + lifecycle topology, and the evidence guide mapping
+  at-least-once / BatchID dedupe / DLQ-never-drops to SOC 2 / PCI-DSS
+  control language. Config: `examples/audit-archive.yaml`.
 
 ### 8. `rdstail athena-ddl` — make the S3 archive instantly queryable
 

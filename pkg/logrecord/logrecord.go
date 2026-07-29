@@ -25,4 +25,17 @@ type LogRecord struct {
 	Message    string    `json:"message"`
 	Marker     string    `json:"marker,omitempty"`
 	BatchID    string    `json:"batch_id,omitempty"`
+	Audit      *Audit    `json:"audit,omitempty"`
+}
+
+// Audit carries the fields pgAudit structures into its CSV payload
+// (AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.accounts,...). Only what the
+// engine already structured is lifted — the statement text stays in Message,
+// never interpreted. Nil on non-audit lines.
+type Audit struct {
+	Type       string `json:"type,omitempty"`        // SESSION | OBJECT
+	Class      string `json:"class,omitempty"`       // READ, WRITE, DDL, ROLE, ...
+	Command    string `json:"command,omitempty"`     // SELECT, INSERT, CREATE TABLE, ...
+	ObjectType string `json:"object_type,omitempty"` // TABLE, VIEW, ... (empty for statement-level classes)
+	ObjectName string `json:"object_name,omitempty"` // schema-qualified name
 }
