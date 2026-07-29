@@ -49,12 +49,18 @@ audience.
 
 ### 1. Real distribution channels ⬅ single highest-leverage item
 
-- Tag `v0.2.0` and let the existing GoReleaser workflow publish **binary
-  archives** for linux/darwin × amd64/arm64.
-- **Docker image pushed to ghcr.io** — for the K8s/ECS crowd this is the
-  product.
-- **Homebrew tap** (`brew install rdstail`) and a `curl | sh` install script
-  with checksum verification.
+Tooling landed in-repo; everything below publishes automatically on the next
+tag push:
+
+- ~~**Docker image pushed to ghcr.io**~~ — ✅ goreleaser builds multi-arch
+  (amd64/arm64) distroless images and manifests
+  (`ghcr.io/avinash-gupta-rdz/rdstail:{version,latest}`).
+- ~~**Homebrew tap** and a `curl | sh` install script with checksum
+  verification~~ — ✅ formula publishes to `avinash-gupta-rdz/homebrew-tap`;
+  `install.sh` verifies SHA-256 against the release's `checksums.txt`.
+- **Remaining (operator actions):** push the `v0.2.0` tag; create the
+  `homebrew-tap` repo and set the `HOMEBREW_TAP_GITHUB_TOKEN` secret (until
+  then the brew upload is skipped and releases stay green).
 - deb/rpm via nfpm when the first request lands.
 
 ### 2. ~~`rdstail init` — from zero to a working config interactively~~ — ✅ shipped

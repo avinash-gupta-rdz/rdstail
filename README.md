@@ -104,11 +104,11 @@ rdstail tail -i my-db-1 --region ap-south-1 --min-severity ERROR
 
 ## Quick start — shipping (5 minutes)
 
-You need Go 1.22+ and AWS credentials with the permissions in [IAM](#iam).
+You need AWS credentials with the permissions in [IAM](#iam).
 
 ```bash
-# 1. Install
-go install github.com/avinash-gupta-rdz/rdstail/cmd/rdstail@latest
+# 1. Install (checksum-verified; see Install below for brew / Docker / go install)
+curl -fsSL https://raw.githubusercontent.com/avinash-gupta-rdz/rdstail/main/install.sh | sh
 
 # 2. Let the wizard build the config from your live account:
 #    it lists your RDS instances, you pick instances + a sink, and a
@@ -255,6 +255,43 @@ that's the last box to tick before `v1.0.0`. Post-v1 direction lives in
 
 ## Install
 
+### One-liner (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avinash-gupta-rdz/rdstail/main/install.sh | sh
+```
+
+Downloads the archive for your OS/arch, **verifies its SHA-256** against the
+release's `checksums.txt`, and installs to `/usr/local/bin`. Pin a version
+with `RDSTAIL_VERSION=v0.2.0`, change the target with
+`RDSTAIL_INSTALL_DIR=$HOME/.local/bin`.
+
+### Homebrew
+
+```bash
+brew install avinash-gupta-rdz/tap/rdstail
+```
+
+### Docker
+
+```bash
+docker run --rm ghcr.io/avinash-gupta-rdz/rdstail:latest version
+# shipping: mount your config and state dir
+docker run --rm \
+  -v $PWD/rdstail.yaml:/etc/rdstail/config.yaml:ro \
+  -v rdstail-state:/var/lib/rdstail \
+  -e AWS_REGION -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+  ghcr.io/avinash-gupta-rdz/rdstail:latest
+```
+
+Multi-arch (`linux/amd64` + `linux/arm64`), distroless, runs as non-root.
+Tags: `latest` and each version.
+
+### Pre-built binaries
+
+Archives for `linux/darwin × amd64/arm64` with checksums on the
+[releases page](https://github.com/avinash-gupta-rdz/rdstail/releases).
+
 ### Go install
 
 ```bash
@@ -270,12 +307,6 @@ git clone https://github.com/avinash-gupta-rdz/rdstail.git
 cd rdstail
 make build        # produces bin/rdstail
 ```
-
-### Pre-built releases
-
-GoReleaser config is included (`.goreleaser.yml`) — tagging a release and
-running `goreleaser release` produces archives for `linux/amd64`,
-`linux/arm64`, `darwin/amd64`, `darwin/arm64`.
 
 ---
 

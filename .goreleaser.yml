@@ -30,7 +30,73 @@ archives:
       - README.md
       - LICENSE*
       - docs/**/*
-      - examples/**/*
+      - examples/*
+
+# Docker images are built from the goreleaser-produced binaries (no in-image
+# compile) and pushed to ghcr.io; the two per-arch images are stitched into
+# multi-arch manifests below. Requires `docker/login-action` against ghcr.io
+# and QEMU/buildx in the release workflow.
+dockers:
+  - id: linux-amd64
+    use: buildx
+    goos: linux
+    goarch: amd64
+    dockerfile: deploy/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=rdstail"
+      - "--label=org.opencontainers.image.description=Tail Amazon RDS logs and ship them to S3, Kafka, HTTP, or stdout — without CloudWatch export fees"
+      - "--label=org.opencontainers.image.source=https://github.com/avinash-gupta-rdz/rdstail"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  - id: linux-arm64
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: deploy/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=rdstail"
+      - "--label=org.opencontainers.image.description=Tail Amazon RDS logs and ship them to S3, Kafka, HTTP, or stdout — without CloudWatch export fees"
+      - "--label=org.opencontainers.image.source=https://github.com/avinash-gupta-rdz/rdstail"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-amd64"
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/avinash-gupta-rdz/rdstail:latest"
+    image_templates:
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-amd64"
+      - "ghcr.io/avinash-gupta-rdz/rdstail:{{ .Version }}-arm64"
+
+# Publishes the formula to avinash-gupta-rdz/homebrew-tap so
+# `brew install avinash-gupta-rdz/tap/rdstail` works. Pushing to a second
+# repo needs a PAT with repo scope in the HOMEBREW_TAP_GITHUB_TOKEN secret;
+# when the secret is absent the formula is still generated in dist/ but the
+# upload is skipped, so releases stay green until the tap repo exists.
+brews:
+  - name: rdstail
+    repository:
+      owner: avinash-gupta-rdz
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    directory: Formula
+    homepage: https://github.com/avinash-gupta-rdz/rdstail
+    description: "Tail Amazon RDS logs and ship them to S3, Kafka, HTTP, or stdout"
+    license: Apache-2.0
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    test: |
+      system "#{bin}/rdstail", "version"
 
 checksum:
   name_template: "checksums.txt"
@@ -46,5 +112,7 @@ changelog:
       - '^test:'
       - '^chore:'
 
+# Published immediately (not draft): install.sh and `releases/latest` need
+# public assets, and the workflow runs `make vet test` before releasing.
 release:
-  draft: true
+  draft: false

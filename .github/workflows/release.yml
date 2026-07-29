@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write # goreleaser creates the GitHub release + uploads archives
+  packages: write # goreleaser pushes Docker images to ghcr.io
 
 jobs:
   goreleaser:
@@ -23,6 +24,17 @@ jobs:
       - name: Test before release
         run: make vet test
 
+      # arm64 image builds run under emulation on the amd64 runner.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -30,3 +42,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with push access to avinash-gupta-rdz/homebrew-tap; when the
+          # secret is unset the brew upload is skipped (see .goreleaser.yml).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

@@ -1,0 +1,9 @@
+# Used by goreleaser's `dockers` section: the binary is prebuilt by the
+# release pipeline and copied in, so this stays a single distroless layer.
+# For a local from-source image build, use deploy/Dockerfile instead.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY rdstail /usr/local/bin/rdstail
+USER nonroot:nonroot
+EXPOSE 9090
+ENTRYPOINT ["/usr/local/bin/rdstail"]
+CMD ["run", "-c", "/etc/rdstail/config.yaml"]

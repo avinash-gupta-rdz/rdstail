@@ -7,6 +7,14 @@ All notable changes to rdstail. Format loosely follows
 
 ### Added
 
+- **Distribution channels** — the release pipeline now publishes a
+  multi-arch (amd64/arm64) distroless **Docker image to
+  `ghcr.io/avinash-gupta-rdz/rdstail`**, a **Homebrew formula** to
+  `avinash-gupta-rdz/homebrew-tap` (`brew install
+  avinash-gupta-rdz/tap/rdstail`), and a checksum-verifying
+  **`curl | sh` installer** (`install.sh`) alongside the existing binary
+  archives. Releases are published immediately on tag push (no longer
+  drafts) after `make vet test` passes.
 - **`rdstail init`** — interactive onboarding: lists the RDS instances your
   ambient credentials can see, you pick instances and a sink (S3 bucket
   picker / Kafka / HTTP webhook / stdout), and a commented, validated
