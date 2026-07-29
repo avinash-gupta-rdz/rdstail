@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -421,6 +422,56 @@ func TestWorker_ParallelFileDrain_AllFilesCheckpointed(t *testing.T) {
 		got, _, _ := store.Get(context.Background(), "db-1", f)
 		if got.Marker != "m1" {
 			t.Fatalf("file %s not checkpointed: %+v", f, got)
+		}
+	}
+}
+
+func TestWorker_MinFileTime_SkipsStaleFiles(t *testing.T) {
+	const (
+		stale = "error/postgresql.log.2026-07-28-10"
+		fresh = "error/postgresql.log"
+	)
+	cutoff := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	api := &scriptedAPI{
+		describeResponses: []*awsrds.DescribeDBLogFilesOutput{{
+			DescribeDBLogFiles: []rdstypes.DescribeDBLogFilesDetails{
+				{LogFileName: aws.String(stale), Size: aws.Int64(100), LastWritten: aws.Int64(cutoff.Add(-time.Hour).UnixMilli())},
+				{LogFileName: aws.String(fresh), Size: aws.Int64(100), LastWritten: aws.Int64(cutoff.Add(time.Minute).UnixMilli())},
+			},
+		}},
+		downloadByKey: map[string]*awsrds.DownloadDBLogFilePortionOutput{
+			stale + "|0": {LogFileData: aws.String("stale-line\n"), Marker: aws.String("s1"), AdditionalDataPending: aws.Bool(false)},
+			fresh + "|0": {LogFileData: aws.String("fresh-line\n"), Marker: aws.String("f1"), AdditionalDataPending: aws.Bool(false)},
+		},
+	}
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	sink := memory.New("mem")
+	store := newFileStore(t)
+
+	w, err := pipeline.NewInstanceWorker(pipeline.InstanceWorkerOpts{
+		Fetcher: fetcher, Store: store, Sink: sink, PollInterval: time.Hour,
+		StartFrom: config.StartFromBeginning, MinFileTime: cutoff,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	if sink.RecordCount() != 1 {
+		t.Fatalf("expected only the fresh file's record, got %d: %v", sink.RecordCount(), sink.Batches())
+	}
+	if got := sink.Batches()[0][0].Message; got != "fresh-line" {
+		t.Fatalf("expected fresh-line, got %q", got)
+	}
+	// The stale file must be neither downloaded nor checkpointed.
+	if _, ok, _ := store.Get(context.Background(), "db-1", stale); ok {
+		t.Fatal("stale file should not be checkpointed")
+	}
+	for _, call := range api.downloadCalls {
+		if strings.HasPrefix(call, stale+"|") {
+			t.Fatalf("stale file should not be downloaded, saw call %q", call)
 		}
 	}
 }

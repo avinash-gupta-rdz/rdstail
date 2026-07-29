@@ -46,6 +46,7 @@ func New() *cobra.Command {
 	root.AddCommand(newDLQCmd(&configPath, &logLevel))
 	root.AddCommand(newDiscoverCmd(&configPath, &logLevel))
 	root.AddCommand(newTailCmd(&logLevel))
+	root.AddCommand(newDumpCmd(&logLevel))
 	root.AddCommand(newStateCmd(&configPath, &logLevel))
 	root.AddCommand(newVersionCmd())
 	return root
