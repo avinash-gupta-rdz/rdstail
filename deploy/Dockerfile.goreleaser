@@ -1,0 +1,9 @@
+# Release image: packages the binary GoReleaser already built for each
+# platform (no compile step here). For local builds use deploy/Dockerfile.
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/rdstail /usr/local/bin/rdstail
+USER nonroot:nonroot
+EXPOSE 9090
+ENTRYPOINT ["/usr/local/bin/rdstail"]
+CMD ["run", "-c", "/etc/rdstail/config.yaml"]

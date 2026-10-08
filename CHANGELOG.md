@@ -5,8 +5,16 @@ All notable changes to rdstail. Format loosely follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-08
+
 ### Added
 
+- **Distribution** — releases now publish static binaries (Linux/macOS ×
+  amd64/arm64) under stable `releases/latest/download/rdstail_<os>_<arch>.tar.gz`
+  URLs, a multi-arch image at `ghcr.io/avinash-gupta-rdz/rdstail`, a Homebrew
+  cask (`brew install avinash-gupta-rdz/tap/rdstail`), and an `install.sh`
+  that verifies the SHA-256 before installing. Archive names no longer carry
+  the version; releases are published directly instead of as drafts.
 - **`rdstail init`** — interactive onboarding: lists the RDS instances your
   ambient credentials can see, you pick instances and a sink (S3 bucket
   picker / Kafka / HTTP webhook / stdout), and a commented, validated

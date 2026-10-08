@@ -104,11 +104,12 @@ rdstail tail -i my-db-1 --region ap-south-1 --min-severity ERROR
 
 ## Quick start — shipping (5 minutes)
 
-You need Go 1.22+ and AWS credentials with the permissions in [IAM](#iam).
+You need AWS credentials with the permissions in [IAM](#iam). No Go
+toolchain required: releases are static binaries.
 
 ```bash
-# 1. Install
-go install github.com/avinash-gupta-rdz/rdstail/cmd/rdstail@latest
+# 1. Install (Homebrew, or see Install below for the script, Docker, and direct downloads)
+brew install avinash-gupta-rdz/tap/rdstail
 
 # 2. Let the wizard build the config from your live account:
 #    it lists your RDS instances, you pick instances + a sink, and a
@@ -159,8 +160,8 @@ no replay explosion.
 ### Quick start — Docker
 
 ```bash
-# Build locally (no pushed image yet)
-docker build -f deploy/Dockerfile -t rdstail:dev .
+# Multi-arch image (linux/amd64, linux/arm64) on GitHub Container Registry
+docker pull ghcr.io/avinash-gupta-rdz/rdstail:latest
 
 # Run with mounted config + persistent state
 docker run --rm \
@@ -170,8 +171,12 @@ docker run --rm \
   -e AWS_REGION=ap-south-1 \
   -e AWS_ACCESS_KEY_ID=... \
   -e AWS_SECRET_ACCESS_KEY=... \
-  rdstail:dev run -c /etc/rdstail/config.yaml
+  ghcr.io/avinash-gupta-rdz/rdstail:latest run -c /etc/rdstail/config.yaml
 ```
+
+Pin a release tag (`:0.3.0`, or `:v0.3` for the latest patch) in production
+rather than `:latest`. To build the image yourself:
+`docker build -f deploy/Dockerfile -t rdstail:dev .`
 
 ### Quick start — verify it's working
 
@@ -255,6 +260,57 @@ that's the last box to tick before `v1.0.0`. Post-v1 direction lives in
 
 ## Install
 
+Every release ships static binaries (`CGO_ENABLED=0`, no libc or Go
+toolchain needed) for Linux and macOS on amd64 and arm64.
+
+### Homebrew (macOS)
+
+```bash
+brew install avinash-gupta-rdz/tap/rdstail
+```
+
+### Install script
+
+Detects your OS/arch, verifies the SHA-256 against the release's
+`checksums.txt`, and installs to `/usr/local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avinash-gupta-rdz/rdstail/main/install.sh | sh
+```
+
+Pin a version with `RDSTAIL_VERSION=v0.3.0`, or choose the directory with
+`RDSTAIL_INSTALL_DIR=~/bin`. [Read the script](install.sh) before piping it
+to a shell.
+
+### Direct download
+
+| OS | amd64 | arm64 |
+|---|---|---|
+| Linux | [rdstail_linux_amd64.tar.gz](https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/rdstail_linux_amd64.tar.gz) | [rdstail_linux_arm64.tar.gz](https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/rdstail_linux_arm64.tar.gz) |
+| macOS | [rdstail_darwin_amd64.tar.gz](https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/rdstail_darwin_amd64.tar.gz) | [rdstail_darwin_arm64.tar.gz](https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/rdstail_darwin_arm64.tar.gz) |
+
+These links always point at the latest release; older versions are on the
+[releases page](https://github.com/avinash-gupta-rdz/rdstail/releases).
+
+```bash
+curl -fsSLO https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/rdstail_linux_amd64.tar.gz
+curl -fsSLO https://github.com/avinash-gupta-rdz/rdstail/releases/latest/download/checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+tar -xzf rdstail_linux_amd64.tar.gz rdstail && sudo install -m 0755 rdstail /usr/local/bin/
+```
+
+On macOS, a browser-downloaded binary is quarantined by Gatekeeper; clear it
+with `xattr -d com.apple.quarantine rdstail` (Homebrew and the install script
+don't need this).
+
+### Docker
+
+```bash
+docker pull ghcr.io/avinash-gupta-rdz/rdstail:latest
+```
+
+See [Quick start — Docker](#quick-start--docker) for a run command.
+
 ### Go install
 
 ```bash
@@ -270,12 +326,6 @@ git clone https://github.com/avinash-gupta-rdz/rdstail.git
 cd rdstail
 make build        # produces bin/rdstail
 ```
-
-### Pre-built releases
-
-GoReleaser config is included (`.goreleaser.yml`) — tagging a release and
-running `goreleaser release` produces archives for `linux/amd64`,
-`linux/arm64`, `darwin/amd64`, `darwin/arm64`.
 
 ---
 

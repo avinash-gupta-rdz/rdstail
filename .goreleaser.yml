@@ -24,8 +24,8 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE*
@@ -36,7 +36,7 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -46,5 +46,49 @@ changelog:
       - '^test:'
       - '^chore:'
 
+dockers_v2:
+  - id: rdstail
+    dockerfile: deploy/Dockerfile.goreleaser
+    images:
+      - "ghcr.io/avinash-gupta-rdz/rdstail"
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}v{{ .Major }}.{{ .Minor }}{{ end }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: rdstail
+      org.opencontainers.image.description: "Ship AWS RDS logs to S3, Kafka, or HTTP without CloudWatch."
+      org.opencontainers.image.source: "https://github.com/avinash-gupta-rdz/rdstail"
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+homebrew_casks:
+  - name: rdstail
+    repository:
+      owner: avinash-gupta-rdz
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/avinash-gupta-rdz/rdstail"
+    description: "Ship AWS RDS logs to S3, Kafka, or HTTP without CloudWatch"
+    license: Apache-2.0
+    commit_author:
+      name: rdstail-release-bot
+      email: noreply@github.com
+    commit_msg_template: "rdstail {{ .Tag }}"
+    # The binaries are not notarized; strip the quarantine flag so macOS
+    # Gatekeeper doesn't block the first run.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rdstail"]
+          end
+
 release:
-  draft: true
+  # Tags like v1.0.0-rc.1 are published as GitHub pre-releases.
+  prerelease: auto
