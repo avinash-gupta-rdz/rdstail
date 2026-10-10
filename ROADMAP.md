@@ -47,14 +47,15 @@ The product works; almost nobody can *get* it yet. `go install` and
 build-from-source filter the audience down to Go developers, which is not the
 audience.
 
-### 1. Real distribution channels ⬅ single highest-leverage item
+### 1. ~~Real distribution channels~~ — ✅ shipped in v0.3.0
 
-- Tag `v0.2.0` and let the existing GoReleaser workflow publish **binary
-  archives** for linux/darwin × amd64/arm64.
-- **Docker image pushed to ghcr.io** — for the K8s/ECS crowd this is the
-  product.
-- **Homebrew tap** (`brew install rdstail`) and a `curl | sh` install script
-  with checksum verification.
+- ~~Binary archives~~ — ✅ static linux/darwin × amd64/arm64 under stable
+  `releases/latest/download/rdstail_<os>_<arch>.tar.gz` URLs.
+- ~~**Docker image pushed to ghcr.io**~~ — ✅ multi-arch distroless image at
+  `ghcr.io/avinash-gupta-rdz/rdstail`.
+- ~~**Homebrew tap** and a `curl | sh` install script with checksum
+  verification~~ — ✅ cask in `avinash-gupta-rdz/homebrew-tap`; `install.sh`
+  verifies SHA-256 against the release's `checksums.txt`.
 - deb/rpm via nfpm when the first request lands.
 
 ### 2. ~~`rdstail init` — from zero to a working config interactively~~ — ✅ shipped
