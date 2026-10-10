@@ -5,7 +5,103 @@ All notable changes to rdstail. Format loosely follows
 
 ## [Unreleased]
 
+### Upgrading from 0.3.x
+
+- **Add `rds:DescribeEvents`** to rdstail's IAM policy (`rdstail iam-policy`
+  prints it). It powers reboot/failover detection; without it rdstail logs a
+  warning and falls back to detecting restarts from the server's start banner.
+- **Multi-line entries are now one record**: `message` may contain newlines
+  (slow-query blocks, multi-line SQL, stack traces). Consumers that assumed one
+  line per record should split on `\n` if they need lines.
+- New record field `truncated` (only set when a single line exceeded RDS's
+  1 MB response limit).
+- **State schema v2**: `state.db` migrates in place on first start and 0.3.x
+  can't read it afterwards — back up `state.db` if you may need to downgrade.
+  Existing checkpoints are kept; nothing is re-shipped or skipped.
+- `start_from: end` now means "the end when rdstail started", and only applies
+  to files present the first time an instance is seen; files that appear later
+  are read from their first line.
+
+### Fixed
+
+Found by testing against live RDS MySQL 8.4 and PostgreSQL 16 instances
+(including Multi-AZ failovers and a 40-process throttling test).
+
+- **Data loss on long lines.** `DownloadDBLogFilePortion` caps a response at
+  1 MB; when the cap lands mid-line RDS cuts the line, appends
+  `[Your log message was truncated]`, and the returned marker skips the rest
+  of it. rdstail shipped the cut line as if complete. Truncated responses are
+  now re-fetched from the same marker limited to the lines that arrived
+  whole, so the cut line is read intact by the next call (verified
+  byte-for-byte on 35 MB hour files full of 300 KB statements). Only a single
+  line larger than 1 MB is unrecoverable; it ships with `"truncated": true`
+  and increments `rdstail_read_anomalies_total{kind="truncated_line"}`.
+- **MySQL/MariaDB hourly rotation lost or stalled data.** On rotation the
+  shrunken live file was treated as truncated and its marker reset, dropping
+  whatever the previous hour wrote after the last poll. Worse, after two or
+  more rotations (rdstail down > 1 h) the RDS marker chain sticks at the end
+  of the old hour forever and the file silently stops shipping. Rotation is
+  now handled explicitly: the checkpoint is handed to the rotated
+  `*.log.YYYY-MM-DD.H` file, later hours are read from their beginning, and
+  already-read hours cost no API calls. With `start_from: beginning`, rotated
+  hours are no longer read a second time.
+- **Purged log hours went unnoticed.** A checkpoint pointing at an hour RDS
+  has already deleted silently read the live file at that byte offset. It is
+  now reported (`rdstail_read_anomalies_total{kind="gap"}` + an ERROR log)
+  and every retained hour after it is read.
+- **New files lost their first lines.** Files that appear after startup —
+  every hourly PostgreSQL file, a log type enabled at runtime, files created
+  while rdstail was down — were skipped to the end under `start_from: end`.
+  `start_from` now applies only to files present when an instance is first
+  seen; anything later is read from the beginning.
+- **MySQL error lines shipped twice.** RDS copies `mysql-error.log` into
+  `mysql-error-running.log` every ~5 minutes and both were shipped. The
+  realtime file is read first; the running log ships only lines the realtime
+  file lost to truncation.
+- **Multi-line entries were split into one record per line.** A slow-query
+  entry (`# Time`, `# User@Host`, `# Query_time`, `SET timestamp`, the SQL),
+  multi-line SQL and stack traces now ship as one record, rejoined across
+  chunk boundaries and crash-resumes. Records may therefore contain newlines.
+- **General-log timestamps.** The tab-separated MySQL general log is now
+  parsed; records carried fetch time before.
+- **Reboots and Multi-AZ failovers.** Both lose the last few KB of each log
+  file and the server appends new lines from the shorter end. rdstail either
+  re-shipped the whole file (when the file came back smaller) or silently
+  skipped the first lines written after the restart (when it had already
+  regrown). Restarts are now detected from RDS events (`DescribeEvents`, one
+  call per region per minute) and from server start banners; each file is
+  re-read from just before the restart and lines already shipped are dropped.
+  Verified over a reboot and three forced failovers under load: no line that
+  RDS kept was missed. Lines RDS itself lost at the restart are unrecoverable
+  by any reader.
+- **Throttling.** `ThrottlingException` and the SDK's client-side
+  "retry quota exceeded" are counted as `outcome="throttled"`; the AWS SDK
+  runs in adaptive retry mode (client-side rate limiting), and a throttled
+  instance doubles its poll interval with ±20% jitter (up to 2 m). Previously
+  some processes in a throttled fleet kept polling at full rate and starved
+  the rest for tens of minutes.
+- **`start_from: end` skipped data written after startup** when the first
+  skip-to-end was delayed (throttling, errors). The tail is now anchored at
+  each file's size at startup.
+- **Startup downloaded every file in full to find its end** (183 MB for one
+  busy PostgreSQL hour file). The tail marker is now built from the file size
+  and confirmed in two small calls.
+- `cost-estimate` no longer prints a meaningless percentage when both sides
+  round to $0.00.
+
 ### Added
+
+- **`runtime.parallel_reads_per_file`** (default 1 = off): read a large
+  backlog in one log file with that many concurrent byte-range requests. RDS
+  serves one file sequentially at only ~0.3–0.9 MB/s; ranges own the lines
+  that start in them, are verified to tile the file, and are parsed as one, so
+  output is identical to a sequential read. For very busy databases and
+  catch-up after downtime; bounded by the account's RDS API rate limit.
+- `rdstail_read_anomalies_total{instance,kind}` — `gap`, `stall` (a file
+  keeps growing but its marker does not advance), `truncated_line`, and
+  `restart` (a reboot/failover was detected). Alert on any increase.
+- SQLite state schema v2 (`skip_continuation` column); v1 databases migrate
+  in place on open.
 
 - **Compliance archive pack** — audit logging productised end to end:
   MySQL/MariaDB audit-plugin files (`audit/server_audit.log*`) are ingested

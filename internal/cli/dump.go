@@ -148,6 +148,9 @@ func newDumpCmd(logLevel *string) *cobra.Command {
 						continue
 					}
 					marker := rdssrc.MarkerBeginning
+					// The newest record is held until the next chunk arrives:
+					// a multi-line entry may continue across the boundary.
+					var held []logrecord.LogRecord
 					for {
 						if err := ctx.Err(); err != nil {
 							return err
@@ -156,11 +159,28 @@ func newDumpCmd(logLevel *string) *cobra.Command {
 						if err != nil {
 							return err
 						}
-						for i := range chunk.Records {
-							chunk.Records[i].Marker = chunk.NextMarker
-							chunk.Records[i].BatchID = chunk.BatchID
+						if chunk.TruncatedLines > 0 {
+							lg.Warn("log line exceeds RDS's 1 MB response limit; written truncated",
+								"instance", instance, "log_file", file.Name)
 						}
-						if err := s.Write(ctx, chunk.Records); err != nil {
+						recs := chunk.Records
+						for i := range recs {
+							recs[i].Marker = chunk.NextMarker
+							recs[i].BatchID = chunk.BatchID
+						}
+						if chunk.LeadingContinuation && len(recs) > 0 && len(held) > 0 {
+							if joined, ok := rdssrc.JoinContinuation(held[0], recs[0]); ok {
+								held[0] = joined
+								recs = recs[1:]
+							}
+						}
+						batch := append(held, recs...)
+						held = nil
+						if chunk.AdditionalPending && len(batch) > 0 {
+							held = []logrecord.LogRecord{batch[len(batch)-1]}
+							batch = batch[:len(batch)-1]
+						}
+						if err := s.Write(ctx, batch); err != nil {
 							return err
 						}
 						marker = chunk.NextMarker

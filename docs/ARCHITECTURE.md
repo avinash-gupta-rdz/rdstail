@@ -136,13 +136,93 @@ is fixed-interval exactly as before.
 
 ## Rotation handling
 
-On every poll, `DescribeDBLogFiles` is called. For each file:
+On every poll, `DescribeDBLogFiles` is called, then rotation is planned before
+any file is drained (`InstanceWorker.planRotation`).
+
+**MySQL/MariaDB hourly rotation.** RDS renames the live general, slow-query and
+error-running logs to `<base>.YYYY-MM-DD.H` every hour. Their markers are
+`YYYY-MM-DD.H:<byte offset>`; the hour ID names the file the offset belongs to.
+Observed on RDS MySQL 8.4: on the base name the marker chain follows one
+rotation but sticks at the old hour's end (pending=false, no data) after two
+or more; a marker for a purged hour silently reads the live file at that
+offset; a rotated file read by name honours the offset and ignores the hour
+ID. So rotation is explicit:
+
+| Base checkpoint | Rotated `<base>.H` files | Base file |
+|---|---|---|
+| In the live hour | Older hours — skipped, no API call | Continue |
+| In rotated hour H | H continues from the checkpoint offset; later hours from 0 | Restart at `0` |
+| In a purged hour | `gap` anomaly; every retained hour from 0 | Restart at `0` |
+| None (first run) | Backfilled only when the base starts from the beginning | `start_from` |
+
+A tracked rotated file is drained until its offset reaches its (immutable) size.
+
+**Other files.**
 
 | Condition | Action |
 |---|---|
-| File not in state store | Apply `runtime.start_from`: `beginning` → `Marker="0"`; `end` → `SkipToEnd` once, persist tail marker. |
-| `file.Size < prev.FileSize` | Truncation (rotate-in-place). Reset `Marker="0"`. |
+| File not in state store | `runtime.start_from` applies only to files present at the first discovery of an instance with no checkpoints; any later file is new data → `Marker="0"`. `end` → `SkipToEnd` once, persist tail marker. |
+| `file.Size < prev.FileSize` | Truncation in place (e.g. `mysql-error.log`). Reset `Marker="0"`. |
 | File no longer returned | Assumed rotated out. Its checkpoint row is pruned by `rdstail state gc` or automatically when `runtime.checkpoint_retention` is set (rows untouched longer than the retention; 6-hourly sweep). |
+| File grows but marker doesn't move for 3 polls | `stall` anomaly + ERROR log. |
+
+**MySQL error log.** RDS appends `mysql-error.log` to `mysql-error-running.log`
+every ~5 minutes and truncates it. The realtime file is drained first; the
+running log is drained afterwards and skips any line already acknowledged from
+the realtime file (an in-memory hash set, one hour TTL), so it only contributes
+lines the realtime file lost to truncation. After a restart the set is empty:
+up to ~5 minutes of error lines may be shipped twice (at-least-once).
+
+## Multi-line records and truncation
+
+A line the engine parser recognises (timestamp or severity) starts a record;
+other lines are continuations appended to it (capped at 1 MiB), so a
+slow-query entry or multi-line statement is one record. A record that may
+continue into the next chunk is held back at mid-pagination flushes and the
+checkpoint is set to the marker of the chunk it began in, with
+`skip_continuation` recording that the chunk opens with continuation lines of
+an already-shipped record. A resume therefore re-pulls at most one chunk and
+never ships a fragment.
+
+When RDS truncates a response at 1 MB (`[Your log message was truncated]`),
+the chunk is re-fetched with `NumberOfLines` set to the lines that arrived
+whole. A single line over 1 MB ships cut with `truncated: true`.
+
+## Reboots and Multi-AZ failovers
+
+Observed live: after a reboot or failover every log file comes back a few KB
+shorter (unflushed writes are lost) and the server appends new lines from that
+shorter end. A stored offset past the new end would skip those lines;
+resetting to 0 re-ships the file. Instead:
+
+- **Detection.** The scheduler polls `DescribeEvents` (one call per region per
+  minute for the whole fleet) for `failover` events and `availability` events
+  mentioning restart/reboot/shutdown, and calls `InstanceWorker.NotifyRestart`.
+  Workers also notice MySQL's `ready for connections` / PostgreSQL's
+  `database system is ready to accept connections` in lines they are about to
+  ship, and a file whose size dropped below its checkpoint. Notices within
+  5 minutes of each other are one restart.
+- **Recovery.** On its next drain each file rewinds 256 KB before the
+  checkpoint it held a minute before the restart (each worker keeps a short
+  in-memory history of checkpoints), drops a possibly partial first line, and
+  skips records whose hash is in its in-memory ring of recently shipped
+  records (sized to cover ≥ 2× the rewind window). Each restart is counted in
+  `rdstail_read_anomalies_total{kind="restart"}`.
+- Lines RDS lost at the restart are gone for every reader. After an rdstail
+  restart the ring is empty, so a rewind may re-ship up to 256 KB.
+
+## Parallel range reads
+
+`runtime.parallel_reads_per_file: N` (> 1) reads a backlog of ≥ N MB in waves of
+N concurrent 2 MB byte ranges (markers are `<prefix>:<offset>`). A range owns
+the lines that **start** in it: it reads from one byte early, discards through
+the first newline, and reads past its end until the next line start, so ranges
+tile the file exactly; the worker verifies the tiling (else falls back to
+sequential for that wave). The wave's text is parsed as one, so grouping and
+order equal a sequential read; the wave ships and checkpoints at the start of
+its last record, which may continue into the next wave. A line over 1 MB, or
+any byte/offset mismatch, falls back to sequential reading. Throughput scales
+with N until the account's RDS API rate limit (≈ 14 calls/s per region).
 
 ## State store
 

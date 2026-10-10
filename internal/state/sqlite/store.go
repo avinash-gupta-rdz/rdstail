@@ -52,7 +52,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 }
 
 // schemaVersion bumps whenever migrations change.
-const schemaVersion = 1
+const schemaVersion = 2
 
 func (s *Store) migrate(ctx context.Context) error {
 	const ddl = `
@@ -92,6 +92,19 @@ CREATE INDEX IF NOT EXISTS idx_dlq_created ON sinks_dlq(created_at);
 	if current >= schemaVersion {
 		return nil
 	}
+	// v2: skip_continuation (see state.Checkpoint.SkipContinuation). A fresh DB
+	// reports version 0 and gets the column here too.
+	var hasCol int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('checkpoints') WHERE name = 'skip_continuation'`).Scan(&hasCol); err != nil {
+		return fmt.Errorf("sqlite migrate v2 probe: %w", err)
+	}
+	if hasCol == 0 {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE checkpoints ADD COLUMN skip_continuation INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("sqlite migrate v2: %w", err)
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES (?)`, schemaVersion); err != nil {
 		return fmt.Errorf("sqlite migrate bump version: %w", err)
 	}
@@ -115,11 +128,11 @@ func (s *Store) Close() error {
 // Get implements state.StateStore.
 func (s *Store) Get(ctx context.Context, instance, logfile string) (state.Checkpoint, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT marker, bytes_written, file_size, last_written
+SELECT marker, bytes_written, file_size, last_written, skip_continuation
 FROM checkpoints WHERE instance_id = ? AND log_file = ?`, instance, logfile)
 	var c state.Checkpoint
 	var lastMS int64
-	err := row.Scan(&c.Marker, &c.BytesWritten, &c.FileSize, &lastMS)
+	err := row.Scan(&c.Marker, &c.BytesWritten, &c.FileSize, &lastMS, &c.SkipContinuation)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return state.Checkpoint{}, false, nil
@@ -135,16 +148,17 @@ FROM checkpoints WHERE instance_id = ? AND log_file = ?`, instance, logfile)
 // Set implements state.StateStore.
 func (s *Store) Set(ctx context.Context, instance, logfile string, c state.Checkpoint) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO checkpoints(instance_id, log_file, marker, bytes_written, file_size, last_written, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO checkpoints(instance_id, log_file, marker, bytes_written, file_size, last_written, skip_continuation, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(instance_id, log_file) DO UPDATE SET
-    marker        = excluded.marker,
-    bytes_written = excluded.bytes_written,
-    file_size     = excluded.file_size,
-    last_written  = excluded.last_written,
-    updated_at    = excluded.updated_at`,
+    marker            = excluded.marker,
+    bytes_written     = excluded.bytes_written,
+    file_size         = excluded.file_size,
+    last_written      = excluded.last_written,
+    skip_continuation = excluded.skip_continuation,
+    updated_at        = excluded.updated_at`,
 		instance, logfile, c.Marker, c.BytesWritten, c.FileSize,
-		c.LastWritten.UnixMilli(), time.Now().UTC().UnixMilli(),
+		c.LastWritten.UnixMilli(), c.SkipContinuation, time.Now().UTC().UnixMilli(),
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite set: %w", err)
@@ -155,7 +169,7 @@ ON CONFLICT(instance_id, log_file) DO UPDATE SET
 // List implements state.StateStore.
 func (s *Store) List(ctx context.Context, instance string) ([]state.FileCheckpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT log_file, marker, bytes_written, file_size, last_written
+SELECT log_file, marker, bytes_written, file_size, last_written, skip_continuation
 FROM checkpoints WHERE instance_id = ?`, instance)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite list: %w", err)
@@ -166,7 +180,7 @@ FROM checkpoints WHERE instance_id = ?`, instance)
 	for rows.Next() {
 		var fc state.FileCheckpoint
 		var lastMS int64
-		if err := rows.Scan(&fc.LogFile, &fc.Checkpoint.Marker, &fc.Checkpoint.BytesWritten, &fc.Checkpoint.FileSize, &lastMS); err != nil {
+		if err := rows.Scan(&fc.LogFile, &fc.Checkpoint.Marker, &fc.Checkpoint.BytesWritten, &fc.Checkpoint.FileSize, &lastMS, &fc.Checkpoint.SkipContinuation); err != nil {
 			return nil, fmt.Errorf("sqlite list scan: %w", err)
 		}
 		if lastMS > 0 {

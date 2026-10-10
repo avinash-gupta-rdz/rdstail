@@ -34,6 +34,7 @@ type entry struct {
 	BytesWritten  int64  `json:"bytes_written"`
 	FileSize      int64  `json:"file_size"`
 	LastWrittenMS int64  `json:"last_written_ms"`
+	SkipCont      bool   `json:"skip_continuation,omitempty"`
 }
 
 type fileData struct {
@@ -124,9 +125,10 @@ func (s *Store) Get(_ context.Context, instance, logfile string) (state.Checkpoi
 		return state.Checkpoint{}, false, nil
 	}
 	c := state.Checkpoint{
-		Marker:       e.Marker,
-		BytesWritten: e.BytesWritten,
-		FileSize:     e.FileSize,
+		Marker:           e.Marker,
+		BytesWritten:     e.BytesWritten,
+		FileSize:         e.FileSize,
+		SkipContinuation: e.SkipCont,
 	}
 	if e.LastWrittenMS > 0 {
 		c.LastWritten = time.UnixMilli(e.LastWrittenMS).UTC()
@@ -143,6 +145,7 @@ func (s *Store) Set(_ context.Context, instance, logfile string, c state.Checkpo
 		BytesWritten:  c.BytesWritten,
 		FileSize:      c.FileSize,
 		LastWrittenMS: c.LastWritten.UnixMilli(),
+		SkipCont:      c.SkipContinuation,
 	}
 	return s.persistLocked()
 }
@@ -157,7 +160,7 @@ func (s *Store) List(_ context.Context, instance string) ([]state.FileCheckpoint
 		if len(k) < len(prefix) || k[:len(prefix)] != prefix {
 			continue
 		}
-		c := state.Checkpoint{Marker: e.Marker, BytesWritten: e.BytesWritten, FileSize: e.FileSize}
+		c := state.Checkpoint{Marker: e.Marker, BytesWritten: e.BytesWritten, FileSize: e.FileSize, SkipContinuation: e.SkipCont}
 		if e.LastWrittenMS > 0 {
 			c.LastWritten = time.UnixMilli(e.LastWrittenMS).UTC()
 		}

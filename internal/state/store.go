@@ -24,6 +24,10 @@ type Checkpoint struct {
 	BytesWritten int64
 	FileSize     int64
 	LastWritten  time.Time
+	// SkipContinuation means the chunk at Marker begins with continuation
+	// lines of an entry that was already shipped whole; on resume they are
+	// dropped instead of being re-shipped as a fragment.
+	SkipContinuation bool
 }
 
 // FileCheckpoint pairs a log file name with its Checkpoint (used by List).

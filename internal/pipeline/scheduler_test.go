@@ -26,7 +26,7 @@ func TestScheduler_RunsMultipleInstances_AndShutsDown(t *testing.T) {
 				}},
 			},
 			downloadByKey: map[string]*awsrds.DownloadDBLogFilePortionOutput{
-				fname + "|0": {LogFileData: aws.String("line1\nline2\n"), Marker: aws.String("end"), AdditionalDataPending: aws.Bool(false)},
+				fname + "|0": {LogFileData: aws.String("2026-07-21 10:00:00 UTC::@:[7]:LOG:  line1\n2026-07-21 10:00:01 UTC::@:[7]:LOG:  line2\n"), Marker: aws.String("end"), AdditionalDataPending: aws.Bool(false)},
 			},
 		}
 	}

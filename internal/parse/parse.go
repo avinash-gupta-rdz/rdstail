@@ -134,6 +134,10 @@ func parsePGAudit(body string) *logrecord.Audit {
 // Slow-query log timestamp header (severity-less):
 //
 //	# Time: 2026-07-21T10:00:00.123456Z
+//
+// General query log (severity-less, tab-separated):
+//
+//	2026-07-21T10:00:00.123456Z	    7 Query	SELECT 1
 
 var (
 	mysqlLine = regexp.MustCompile(
@@ -142,6 +146,10 @@ var (
 		`^(\d{4}-\d{2}-\d{2}) +(\d{1,2}:\d{2}:\d{2}) +\d+ +\[([A-Za-z]+)\]`)
 	slowTimeLine = regexp.MustCompile(
 		`^# Time: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))`)
+	// General query log — tab-separated, severity-less:
+	//   2026-10-10T06:10:05.902340Z\t    7 Query\tSELECT 1
+	generalLine = regexp.MustCompile(
+		`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\t +\d+ [A-Z]`)
 	// MariaDB audit plugin (server_audit.log, ingested behind include_audit):
 	//   20260729 06:00:00,ip-10-0-0-1,app,10.0.0.9,64,1234,QUERY,mydb,'SELECT 1',0
 	// Only the timestamp is lifted; the CSV payload stays verbatim in Message.
@@ -169,6 +177,13 @@ func (mysqlParser) Parse(line string) Meta {
 		return meta
 	}
 	if m := slowTimeLine.FindStringSubmatch(line); m != nil {
+		var meta Meta
+		if ts, err := time.Parse(time.RFC3339Nano, m[1]); err == nil {
+			meta.Timestamp = ts.UTC()
+		}
+		return meta
+	}
+	if m := generalLine.FindStringSubmatch(line); m != nil {
 		var meta Meta
 		if ts, err := time.Parse(time.RFC3339Nano, m[1]); err == nil {
 			meta.Timestamp = ts.UTC()

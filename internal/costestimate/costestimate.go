@@ -222,7 +222,12 @@ func (r Report) Text() string {
 	line("rdstail path", c.RdstailTotalUSD)
 	line(fmt.Sprintf("  S3 PUTs     %d x $%.3f/1k", c.S3PutCount, p.S3PutPerThousand), c.S3PutUSD)
 	line(fmt.Sprintf("  S3 storage  %.2f GB gzip'd x $%.3f/GB-mo", c.S3CompressedGB, p.S3StoragePerGB), c.S3StorageUSD)
-	b.WriteString(fmt.Sprintf("\n  -> rdstail saves ~%s/mo (%.0f%%)\n", usd(c.MonthlySavingsUSD), c.SavingsPercent))
+	if c.CloudWatchTotalUSD < 0.01 {
+		// Both sides round to $0.00; a percentage of fractions of a cent reads as nonsense.
+		b.WriteString("\n  -> cost is negligible either way at this log volume\n")
+	} else {
+		b.WriteString(fmt.Sprintf("\n  -> rdstail saves ~%s/mo (%.0f%%)\n", usd(c.MonthlySavingsUSD), c.SavingsPercent))
+	}
 
 	if len(r.Notes) > 0 {
 		b.WriteString("\n")
