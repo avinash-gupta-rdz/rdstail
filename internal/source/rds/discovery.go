@@ -22,8 +22,10 @@ var _ DiscoveryAPI = (*awsrds.Client)(nil)
 // every listed tag must be present with the exact value. Engine ("" == any)
 // filters on the normalised engine name (postgres/mysql/mariadb).
 type DiscoverFilter struct {
-	Tags   map[string]string
-	Engine string
+	Tags        map[string]string
+	ExcludeTags map[string]string // drop instances with any of these ("*" = any value)
+	All         bool              // no tag required; Tags (if any) still filter
+	Engine      string
 }
 
 // DiscoveredInstance is one tag-matched RDS instance.
@@ -39,24 +41,24 @@ type DiscoveredInstance struct {
 // match. Aurora engines normalise to their base engine — log-file naming
 // matches where RDS's does (same caveat as explicit configuration).
 func DiscoverInstances(ctx context.Context, api DiscoveryAPI, filter DiscoverFilter) ([]DiscoveredInstance, error) {
-	if len(filter.Tags) == 0 {
-		return nil, fmt.Errorf("rds discover: at least one tag is required")
+	if len(filter.Tags) == 0 && !filter.All {
+		return nil, fmt.Errorf("rds discover: set at least one tag, or all")
 	}
-	return listInstances(ctx, api, filter.Engine, filter.Tags)
+	return listInstances(ctx, api, filter.Engine, filter.Tags, filter.ExcludeTags)
 }
 
 // ListInstances lists every rdstail-supported RDS instance in the account's
 // region (paginated), sorted by ID — no tag filter. engineFilter ("" == any)
 // filters on the normalised engine name.
 func ListInstances(ctx context.Context, api DiscoveryAPI, engineFilter string) ([]DiscoveredInstance, error) {
-	return listInstances(ctx, api, engineFilter, nil)
+	return listInstances(ctx, api, engineFilter, nil, nil)
 }
 
 // listInstances pages through DescribeDBInstances, keeping instances that pass
 // the engine filter ("" == any) and tag filter (nil == any; otherwise AND
 // semantics). Instances whose engine has no rdstail support (oracle,
 // sqlserver, ...) are skipped.
-func listInstances(ctx context.Context, api DiscoveryAPI, engineFilter string, tagFilter map[string]string) ([]DiscoveredInstance, error) {
+func listInstances(ctx context.Context, api DiscoveryAPI, engineFilter string, tagFilter, exclude map[string]string) ([]DiscoveredInstance, error) {
 	var out []DiscoveredInstance
 	var marker *string
 	for {
@@ -72,14 +74,15 @@ func listInstances(ctx context.Context, api DiscoveryAPI, engineFilter string, t
 			if engineFilter != "" && engine != engineFilter {
 				continue
 			}
-			if tagFilter != nil {
-				tags := map[string]string{}
-				for _, t := range db.TagList {
-					tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
-				}
-				if !tagsMatch(tagFilter, tags) {
-					continue
-				}
+			tags := map[string]string{}
+			for _, t := range db.TagList {
+				tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
+			}
+			if len(tagFilter) > 0 && !tagsMatch(tagFilter, tags) {
+				continue
+			}
+			if excluded(exclude, tags) {
+				continue
 			}
 			out = append(out, DiscoveredInstance{
 				ID:     aws.ToString(db.DBInstanceIdentifier),
@@ -98,6 +101,16 @@ func listInstances(ctx context.Context, api DiscoveryAPI, engineFilter string, t
 
 // tagsMatch reports whether every wanted tag is present in got with the exact
 // value (AND semantics).
+// excluded reports whether got carries any exclude tag ("*" matches any value).
+func excluded(exclude, got map[string]string) bool {
+	for k, v := range exclude {
+		if g, ok := got[k]; ok && (v == "*" || g == v) {
+			return true
+		}
+	}
+	return false
+}
+
 func tagsMatch(want, got map[string]string) bool {
 	for k, v := range want {
 		if got[k] != v {

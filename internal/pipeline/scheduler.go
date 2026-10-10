@@ -120,6 +120,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 
 	concurrency := s.cfg.Runtime.MaxInstancesConcurrent
+	// Workers run until shutdown, so a cap below the instance count leaves
+	// the excess instances never tailed. Say so loudly.
+	if concurrency > 0 && concurrency < len(s.instances) {
+		s.log.Warn("runtime.max_instances_concurrent is below the number of instances; the excess are NOT tailed",
+			"max_instances_concurrent", concurrency, "instances", len(s.instances))
+	}
 	if dynamic {
 		// The set can grow past the boot size; never clamp to it.
 		if concurrency <= 0 {

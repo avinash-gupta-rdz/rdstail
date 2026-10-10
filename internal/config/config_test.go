@@ -52,8 +52,8 @@ func TestLoadAndValidate_Happy(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if cfg.Runtime.MaxInstancesConcurrent != 2 {
-		t.Fatalf("expected default max_instances_concurrent=2, got %d", cfg.Runtime.MaxInstancesConcurrent)
+	if cfg.Runtime.MaxInstancesConcurrent != 0 {
+		t.Fatalf("expected default max_instances_concurrent=0 (one worker per instance), got %d", cfg.Runtime.MaxInstancesConcurrent)
 	}
 	if cfg.Runtime.ShutdownTimeout != 30*time.Second {
 		t.Fatalf("expected default shutdown_timeout=30s, got %s", cfg.Runtime.ShutdownTimeout)
@@ -208,19 +208,78 @@ func TestValidate_DiscoverSources(t *testing.T) {
 		t.Fatalf("discover-only source should validate, got: %v", err)
 	}
 
-	// Discover with empty tags: rejected.
+	// Discover with neither tags nor all: rejected.
 	c = base()
 	c.Sources = []Source{{Type: "rds", Region: "ap-south-1", Discover: &Discover{}}}
-	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "discover.tags") {
-		t.Fatalf("expected discover.tags error, got: %v", err)
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "discover") {
+		t.Fatalf("expected discover error, got: %v", err)
 	}
 
-	// Explicit instances still require an engine.
+	// Discover everything in the region, minus excluded tags.
 	c = base()
-	c.Sources = []Source{{Type: "rds", Region: "ap-south-1", Instances: []string{"db-1"},
-		Discover: &Discover{Tags: map[string]string{"a": "b"}}}}
+	c.Sources = []Source{{Type: "rds", Region: "ap-south-1",
+		Discover: &Discover{All: true, ExcludeTags: map[string]string{"rdstail": "off"}}}}
+	if err := Validate(c); err != nil {
+		t.Fatalf("discover all should validate, got: %v", err)
+	}
+
+	// Explicit instances may omit engine (detected per instance).
+	c = base()
+	c.Sources = []Source{{Type: "rds", Region: "ap-south-1", Instances: []string{"db-1", "pg-2"}}}
+	if err := Validate(c); err != nil {
+		t.Fatalf("explicit instances without engine should validate, got: %v", err)
+	}
+
+	// An invalid engine is still rejected.
+	c.Sources[0].Engine = "oracle"
 	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "engine") {
-		t.Fatalf("expected engine error for explicit instances, got: %v", err)
+		t.Fatalf("expected engine error, got: %v", err)
+	}
+
+	// region and regions together: rejected.
+	c = base()
+	c.Sources = []Source{{Type: "rds", Region: "us-east-1", Regions: []string{"eu-west-1"}, Instances: []string{"db"}}}
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("expected region/regions error, got: %v", err)
+	}
+
+	// Shard must be i/n.
+	c = base()
+	c.Sources = []Source{{Type: "rds", Region: "us-east-1", Instances: []string{"db"}}}
+	c.Runtime.Shard = "5/4"
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "shard") {
+		t.Fatalf("expected shard error, got: %v", err)
+	}
+}
+
+func TestLoad_RegionsExpandToOneSourcePerRegion(t *testing.T) {
+	p := writeTemp(t, `
+sources:
+  - type: rds
+    regions: [us-east-1, eu-west-1, ap-south-1]
+    discover:
+      all: true
+      exclude_tags: {rdstail: "off"}
+sinks:
+  - name: out
+    type: stdout
+state: {type: sqlite, path: ./state.db}
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(c.Sources) != 3 {
+		t.Fatalf("want 3 sources, got %d", len(c.Sources))
+	}
+	for i, want := range []string{"us-east-1", "eu-west-1", "ap-south-1"} {
+		s := c.Sources[i]
+		if s.Region != want || len(s.Regions) != 0 || !s.Discover.All || s.Discover.ExcludeTags["rdstail"] != "off" {
+			t.Fatalf("source %d: %+v", i, s)
+		}
 	}
 }
 
@@ -251,5 +310,28 @@ state: {type: sqlite, path: ./s.db}
 	s3 := cfg.Sinks[0].S3
 	if s3.AssumeRole != "arn:aws:iam::999999999999:role/log-writer" || s3.ExternalID != "rdstail-prod" {
 		t.Fatalf("assume_role/external_id not loaded: %+v", s3)
+	}
+}
+
+// A discovery-only config used to default max_instances_concurrent to 1, so
+// only one discovered database was ever tailed (found in live testing). The
+// default must stay 0 (= one worker per resolved instance).
+func TestLoad_DiscoveryOnlyDoesNotCapConcurrency(t *testing.T) {
+	p := writeTemp(t, `
+sources:
+  - type: rds
+    region: us-east-1
+    discover: {all: true}
+sinks:
+  - name: out
+    type: stdout
+state: {type: sqlite, path: ./state.db}
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runtime.MaxInstancesConcurrent != 0 {
+		t.Fatalf("max_instances_concurrent defaulted to %d; want 0 (auto)", c.Runtime.MaxInstancesConcurrent)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/avinash-gupta-rdz/rdstail/internal/config"
 	"github.com/avinash-gupta-rdz/rdstail/internal/metrics"
 	"github.com/avinash-gupta-rdz/rdstail/internal/pipeline"
+	"github.com/avinash-gupta-rdz/rdstail/internal/shard"
 	"github.com/avinash-gupta-rdz/rdstail/internal/sink"
 	sinkfactory "github.com/avinash-gupta-rdz/rdstail/internal/sink/factory"
 	rdssrc "github.com/avinash-gupta-rdz/rdstail/internal/source/rds"
@@ -41,6 +42,7 @@ func Run(ctx context.Context, cfg *config.Config, lg *slog.Logger) error {
 		"max_workers", cfg.Runtime.MaxWorkers,
 		"max_instances_concurrent", cfg.Runtime.MaxInstancesConcurrent,
 		"state_type", cfg.State.Type,
+		"shard", cfg.Runtime.Shard,
 	)
 
 	store, err := state.Open(ctx, state.Config{Type: cfg.State.Type, Path: cfg.State.Path})
@@ -237,11 +239,15 @@ func (r *specResolver) client(ctx context.Context, region, assumeRole string) (*
 
 // Resolve returns the current desired instance set.
 func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, error) {
+	sh, err := shard.Parse(r.cfg.Runtime.Shard)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	var out []pipeline.InstanceSpec
 	add := func(spec pipeline.InstanceSpec) {
 		k := spec.Region + "|" + spec.InstanceID
-		if seen[k] {
+		if seen[k] || !sh.Owns(k) {
 			return
 		}
 		seen[k] = true
@@ -256,10 +262,30 @@ func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, er
 		if err != nil {
 			return nil, err
 		}
+		// Explicit instances without a configured engine: one
+		// DescribeDBInstances listing gives every instance's engine, so a
+		// source may mix MySQL, MariaDB and PostgreSQL.
+		var engines map[string]string
+		if src.Engine == "" && len(src.Instances) > 0 {
+			all, err := rdssrc.ListInstances(ctx, client, "")
+			if err != nil {
+				return nil, fmt.Errorf("detect engines in %s: %w", src.Region, err)
+			}
+			engines = make(map[string]string, len(all))
+			for _, d := range all {
+				engines[d.ID] = d.Engine
+			}
+		}
 		for _, inst := range src.Instances {
+			engine := src.Engine
+			if engine == "" {
+				if engine = engines[inst]; engine == "" {
+					return nil, fmt.Errorf("instance %q not found in %s (or its engine isn't supported); set engine: explicitly if it is", inst, src.Region)
+				}
+			}
 			add(pipeline.InstanceSpec{
 				InstanceID:   inst,
-				Engine:       src.Engine,
+				Engine:       engine,
 				Region:       src.Region,
 				IncludeAudit: src.IncludeAudit,
 				API:          client,
@@ -267,8 +293,10 @@ func (r *specResolver) Resolve(ctx context.Context) ([]pipeline.InstanceSpec, er
 		}
 		if src.Discover != nil {
 			found, err := rdssrc.DiscoverInstances(ctx, client, rdssrc.DiscoverFilter{
-				Tags:   src.Discover.Tags,
-				Engine: src.Engine,
+				Tags:        src.Discover.Tags,
+				ExcludeTags: src.Discover.ExcludeTags,
+				All:         src.Discover.All,
+				Engine:      src.Engine,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("discover instances in %s: %w", src.Region, err)

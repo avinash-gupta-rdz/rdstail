@@ -3,6 +3,31 @@
 All notable changes to rdstail. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.5.0] — 2026-10-11
+
+### Fixed
+
+- **Discovery tailed only one database.** With discovery-only sources (no
+  explicit `instances:`), `max_instances_concurrent` defaulted to 1, so only
+  one discovered instance was ever tailed and the others silently waited
+  forever. The default is now 0 (one worker per resolved instance), and a cap
+  below the instance count is logged as a warning.
+
+### Added
+
+- **Discover everything**: `discover: {all: true}` ingests every supported
+  instance in a region — no tagging required — and `discover.exclude_tags`
+  opts databases out (`"*"` matches any value).
+- **`regions: [...]`** on a source: one block covers several regions
+  (expanded into one source per region at load time).
+- **Engine auto-detection for explicit instances**: `engine:` is now
+  optional everywhere; each instance's engine is read from
+  `DescribeDBInstances`, so one source can mix MySQL, MariaDB and PostgreSQL.
+- **`--shard i/n`** (or `runtime.shard`): split a fleet across n rdstail
+  processes with no overlap and no coordination (rendezvous hashing; resizing
+  moves only ~1/n of the databases). The 500-instance cap now applies per
+  shard.
+
 ## [0.4.0] — 2026-10-10
 
 ### Upgrading from 0.3.x

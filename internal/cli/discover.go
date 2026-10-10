@@ -33,13 +33,19 @@ func newDiscoverCmd(cfgPath, logLevel *string) *cobra.Command {
 					return fmt.Errorf("aws config for %s: %w", src.Region, err)
 				}
 				found, err := rdssrc.DiscoverInstances(cmd.Context(), awsrds.NewFromConfig(awsCfg), rdssrc.DiscoverFilter{
-					Tags:   src.Discover.Tags,
-					Engine: src.Engine,
+					Tags:        src.Discover.Tags,
+					ExcludeTags: src.Discover.ExcludeTags,
+					All:         src.Discover.All,
+					Engine:      src.Engine,
 				})
 				if err != nil {
 					return fmt.Errorf("sources[%d]: %w", i, err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "sources[%d] region=%s tags=%v → %d instance(s)\n", i, src.Region, src.Discover.Tags, len(found))
+				sel := fmt.Sprintf("tags=%v", src.Discover.Tags)
+				if src.Discover.All {
+					sel = fmt.Sprintf("all (exclude_tags=%v)", src.Discover.ExcludeTags)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "sources[%d] region=%s %s → %d instance(s)\n", i, src.Region, sel, len(found))
 				for _, d := range found {
 					fmt.Fprintf(cmd.OutOrStdout(), "  %-40s %-10s %s\n", d.ID, d.Engine, d.Status)
 				}

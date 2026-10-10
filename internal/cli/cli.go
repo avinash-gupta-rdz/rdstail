@@ -11,6 +11,7 @@ import (
 	"github.com/avinash-gupta-rdz/rdstail/internal/app"
 	"github.com/avinash-gupta-rdz/rdstail/internal/config"
 	"github.com/avinash-gupta-rdz/rdstail/internal/logging"
+	"github.com/avinash-gupta-rdz/rdstail/internal/shard"
 	"github.com/avinash-gupta-rdz/rdstail/internal/validate"
 )
 
@@ -53,7 +54,8 @@ func New() *cobra.Command {
 }
 
 func newRunCmd(cfgPath, logLevel *string) *cobra.Command {
-	return &cobra.Command{
+	var shardFlag string
+	c := &cobra.Command{
 		Use:   "run",
 		Short: "Run the log shipper.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -61,9 +63,17 @@ func newRunCmd(cfgPath, logLevel *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if shardFlag != "" {
+				if _, err := shard.Parse(shardFlag); err != nil {
+					return err
+				}
+				cfg.Runtime.Shard = shardFlag
+			}
 			return app.Run(cmd.Context(), cfg, lg)
 		},
 	}
+	c.Flags().StringVar(&shardFlag, "shard", "", "ingest only this process's share of the fleet, i/n (e.g. 2/4); each shard needs its own state store")
+	return c
 }
 
 func newValidateCmd(cfgPath, logLevel *string) *cobra.Command {

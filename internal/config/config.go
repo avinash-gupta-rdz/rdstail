@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/avinash-gupta-rdz/rdstail/internal/shard"
 	"os"
 	"regexp"
 	"strings"
@@ -32,12 +33,15 @@ type Config struct {
 // the union is ingested, deduplicated by instance ID.
 type Source struct {
 	Type string `koanf:"type" yaml:"type"`
-	// Engine is required when Instances are listed explicitly (the RDS log API
-	// does not reveal the engine per log file). Discovered instances get their
-	// engine from the DescribeDBInstances response, so a discover-only source
-	// may omit it; when set, it additionally filters discovery to that engine.
-	Engine     string    `koanf:"engine" yaml:"engine"`
-	Region     string    `koanf:"region" yaml:"region"`
+	// Engine is optional: when empty, each instance's engine is read from
+	// DescribeDBInstances (explicit and discovered alike), so one source can
+	// mix MySQL, MariaDB and PostgreSQL. When set, explicit instances are
+	// taken to be that engine and discovery is filtered to it.
+	Engine string `koanf:"engine" yaml:"engine,omitempty"`
+	Region string `koanf:"region" yaml:"region,omitempty"`
+	// Regions lists several regions for one source block; it is expanded at
+	// load time into one source per region. Mutually exclusive with Region.
+	Regions    []string  `koanf:"regions" yaml:"regions,omitempty"`
 	Instances  []string  `koanf:"instances" yaml:"instances"`
 	Discover   *Discover `koanf:"discover" yaml:"discover,omitempty"`
 	AssumeRole string    `koanf:"assume_role" yaml:"assume_role,omitempty"`
@@ -51,7 +55,12 @@ type Source struct {
 // Discover selects RDS instances by tag at startup instead of (or in addition
 // to) an explicit instance list. All listed tags must match (AND semantics).
 type Discover struct {
-	Tags map[string]string `koanf:"tags" yaml:"tags"`
+	Tags map[string]string `koanf:"tags" yaml:"tags,omitempty"`
+	// All selects every supported RDS instance in the region (tags then act
+	// as an additional filter, if any). ExcludeTags drops instances carrying
+	// any listed tag; a value of "*" matches any value.
+	All         bool              `koanf:"all" yaml:"all,omitempty"`
+	ExcludeTags map[string]string `koanf:"exclude_tags" yaml:"exclude_tags,omitempty"`
 	// RefreshInterval enables periodic re-discovery: the tag query re-runs on
 	// this cadence and workers are started/stopped to match the fleet. 0
 	// (default) resolves once at startup.
@@ -166,7 +175,12 @@ type Runtime struct {
 	// many concurrent byte-range requests. RDS serves one file at only
 	// ~0.3–0.9 MB/s sequentially; this multiplies it (up to the account's API
 	// rate limit) for very busy databases and catch-up. 1 (default) = off.
-	ParallelReadsPerFile   int           `koanf:"parallel_reads_per_file" yaml:"parallel_reads_per_file,omitempty"`
+	ParallelReadsPerFile int `koanf:"parallel_reads_per_file" yaml:"parallel_reads_per_file,omitempty"`
+	// Shard "i/n" makes this process ingest only its 1/n of the instances
+	// (rendezvous hashing on region+instance), so n rdstail processes split a
+	// fleet with no overlap and no coordination. Each process needs its own
+	// state store. Empty = ingest everything. CLI: rdstail run --shard i/n.
+	Shard                  string        `koanf:"shard" yaml:"shard,omitempty"`
 	MaxInstancesConcurrent int           `koanf:"max_instances_concurrent" yaml:"max_instances_concurrent"`
 	ShutdownTimeout        time.Duration `koanf:"shutdown_timeout" yaml:"shutdown_timeout"`
 	StartFrom              string        `koanf:"start_from" yaml:"start_from"` // "beginning" | "end"
@@ -236,7 +250,27 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	applyPostDefaults(cfg)
+	cfg.Sources = expandRegions(cfg.Sources)
 	return cfg, nil
+}
+
+// expandRegions turns a source with `regions: [a, b]` into one source per
+// region, so everything downstream deals with single-region sources. A source
+// that sets both region and regions is left as-is for Validate to reject.
+func expandRegions(in []Source) []Source {
+	out := make([]Source, 0, len(in))
+	for _, src := range in {
+		if len(src.Regions) == 0 || src.Region != "" {
+			out = append(out, src)
+			continue
+		}
+		for _, r := range src.Regions {
+			cp := src
+			cp.Region, cp.Regions = strings.TrimSpace(r), nil
+			out = append(out, cp)
+		}
+	}
+	return out
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -301,16 +335,10 @@ func applyPostDefaults(c *Config) {
 			s.HTTP.Timeout = 30 * time.Second
 		}
 	}
-	if c.Runtime.MaxInstancesConcurrent == 0 {
-		total := 0
-		for _, src := range c.Sources {
-			total += len(src.Instances)
-		}
-		if total == 0 {
-			total = 1
-		}
-		c.Runtime.MaxInstancesConcurrent = total
-	}
+	// MaxInstancesConcurrent stays 0 (= one worker per resolved instance) by
+	// default. It used to be set to the explicit-instance count here, which
+	// for discovery-only sources was 0 → 1: only one discovered database was
+	// ever tailed and the rest waited forever.
 }
 
 // Validate runs static (non-network) validation on c. Every failing rule is
@@ -326,21 +354,20 @@ func Validate(c *Config) error {
 		if src.Type != SourceTypeRDS {
 			errs = append(errs, fmt.Errorf("%s.type: only %q is supported", prefix, SourceTypeRDS))
 		}
-		// Discover-only sources may omit engine (inferred per instance from
-		// AWS); explicit instances require it.
-		if src.Engine == "" && src.Discover != nil && len(src.Instances) == 0 {
-			// ok
-		} else if !isValidEngine(src.Engine) {
+		// Engine may be omitted: it is read per instance from AWS.
+		if src.Engine != "" && !isValidEngine(src.Engine) {
 			errs = append(errs, fmt.Errorf("%s.engine: must be one of postgres, mysql, mariadb (got %q)", prefix, src.Engine))
 		}
-		if strings.TrimSpace(src.Region) == "" {
-			errs = append(errs, fmt.Errorf("%s.region: required", prefix))
+		if src.Region != "" && len(src.Regions) > 0 {
+			errs = append(errs, fmt.Errorf("%s: set region or regions, not both", prefix))
+		} else if strings.TrimSpace(src.Region) == "" {
+			errs = append(errs, fmt.Errorf("%s.region: required (or regions: [...])", prefix))
 		}
 		if len(src.Instances) == 0 && src.Discover == nil {
-			errs = append(errs, fmt.Errorf("%s.instances: at least one instance required (or set discover.tags)", prefix))
+			errs = append(errs, fmt.Errorf("%s.instances: at least one instance required (or set discover)", prefix))
 		}
-		if src.Discover != nil && len(src.Discover.Tags) == 0 {
-			errs = append(errs, fmt.Errorf("%s.discover.tags: at least one tag required", prefix))
+		if src.Discover != nil && len(src.Discover.Tags) == 0 && !src.Discover.All {
+			errs = append(errs, fmt.Errorf("%s.discover: set tags, or all: true to ingest every instance in the region", prefix))
 		}
 		if src.Discover != nil && src.Discover.RefreshInterval != 0 && src.Discover.RefreshInterval < 30*time.Second {
 			errs = append(errs, fmt.Errorf("%s.discover.refresh_interval: must be >= 30s (or 0 for startup-only)", prefix))
@@ -411,11 +438,16 @@ func Validate(c *Config) error {
 		errs = append(errs, errors.New("state.path: required"))
 	}
 
+	sh, err := shard.Parse(c.Runtime.Shard)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("runtime.shard: %w", err))
+	}
 	instanceCount := 0
 	for _, src := range c.Sources {
 		instanceCount += len(src.Instances)
 	}
-	if instanceCount > 500 {
+	// With sharding each process holds ~1/n of the explicit list.
+	if instanceCount/max(sh.Count, 1) > 500 {
 		errs = append(errs, fmt.Errorf("sources: %d instances exceeds the 500-instance default cap (raise memory_budget_bytes and re-check cardinality before removing)", instanceCount))
 	}
 
