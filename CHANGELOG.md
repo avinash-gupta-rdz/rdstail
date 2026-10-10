@@ -3,7 +3,7 @@
 All notable changes to rdstail. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
-## [Unreleased]
+## [0.4.0] — 2026-10-10
 
 ### Upgrading from 0.3.x
 
@@ -95,8 +95,10 @@ Found by testing against live RDS MySQL 8.4 and PostgreSQL 16 instances
   backlog in one log file with that many concurrent byte-range requests. RDS
   serves one file sequentially at only ~0.3–0.9 MB/s; ranges own the lines
   that start in them, are verified to tile the file, and are parsed as one, so
-  output is identical to a sequential read. For very busy databases and
-  catch-up after downtime; bounded by the account's RDS API rate limit.
+  output is identical to a sequential read (verified byte-for-byte on 349 MB).
+  Measured gain on a db.t4g.small: ~1.4× (RDS per-call latency rises with
+  concurrency); larger instance classes may gain more. Bounded by the
+  account's RDS API rate limit.
 - `rdstail_read_anomalies_total{instance,kind}` — `gap`, `stall` (a file
   keeps growing but its marker does not advance), `truncated_line`, and
   `restart` (a reboot/failover was detected). Alert on any increase.

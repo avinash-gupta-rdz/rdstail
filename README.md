@@ -775,7 +775,7 @@ measured against live RDS MySQL 8.4 / PostgreSQL 16 in us-east-1:
 
 | Limit | Measured | What it means |
 |---|---|---|
-| **Per log file** | 0.3–0.9 MB/s (≈ 20–50 MB/min), depending on content; the API is sequential per file | A single file growing faster than this (e.g. `general_log` or `log_statement=all` at thousands of queries/s) cannot be tailed in realtime — lag grows until the burst ends. Error and slow-query logs are far below it. Watch `rdstail_ingestion_lag_seconds`. |
+| **Per log file** | 0.3–0.9 MB/s (≈ 20–50 MB/min), depending on content; the API is sequential per file. `parallel_reads_per_file: 8` measured ~1.2 MB/s on a db.t4g.small | A single file growing faster than this (e.g. `general_log` or `log_statement=all` at thousands of queries/s) cannot be tailed in realtime — lag grows until the burst ends. Error and slow-query logs are far below it. Watch `rdstail_ingestion_lag_seconds`. |
 | **Per account + region** | ≈ 14 successful log-API calls/s sustained, shared by everything calling the RDS API in that account/region | Throttling starts beyond it; rdstail backs off (adaptive client rate limiting + jittered poll backoff) without losing data, but latency rises. |
 
 Each poll costs one `DescribeDBLogFiles` per instance plus one
