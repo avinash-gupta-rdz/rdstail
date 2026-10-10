@@ -221,8 +221,11 @@ tile the file exactly; the worker verifies the tiling (else falls back to
 sequential for that wave). The wave's text is parsed as one, so grouping and
 order equal a sequential read; the wave ships and checkpoints at the start of
 its last record, which may continue into the next wave. A line over 1 MB, or
-any byte/offset mismatch, falls back to sequential reading. Throughput scales
-with N until the account's RDS API rate limit (≈ 14 calls/s per region).
+any byte/offset mismatch, falls back to sequential reading. Measured on a
+db.t4g.small PostgreSQL instance, 8 readers drained a 276 MB file at ~1.2 MB/s
+vs ~0.86 MB/s sequential: RDS's per-call latency rises with concurrency, so
+the gain depends on the instance; it is also bounded by the account's RDS API
+rate limit (≈ 14 calls/s per region).
 
 ## State store
 
