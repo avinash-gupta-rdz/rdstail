@@ -419,16 +419,21 @@ See `examples/` for a per-topology catalogue:
 ```yaml
 sources:                       # required; ≥ 1
   - type: rds                  # only "rds" in v1
-    engine: postgres           # postgres | mysql | mariadb (required with
-                               # explicit instances; optional with discover —
-                               # then it acts as an engine filter)
-    region: ap-south-1         # AWS region
+    engine: postgres           # optional: postgres | mysql | mariadb. Empty →
+                               # detected per instance, so one source can mix
+                               # engines; set → explicit instances are that
+                               # engine and discovery is filtered to it
+    region: ap-south-1         # AWS region — or `regions: [us-east-1, eu-west-1]`
+                               # (expanded into one source per region)
     instances: [db-1, db-2]    # explicit DB identifiers (may be empty if
                                # discover is set; union of both is ingested)
-    discover:                  # optional tag-based discovery
+    discover:                  # optional discovery
+      all: false               # true → every supported instance in the region
       tags:                    # AND semantics — every tag must match
-        rdstail: "true"
+        rdstail: "true"        # (required unless all: true)
         team: payments
+      exclude_tags:            # drop instances with any of these; "*" = any value
+        rdstail: "off"
       refresh_interval: 5m     # re-discover on this cadence and start/stop
                                # workers to match the fleet; 0 = startup-only
     assume_role: ""            # optional role ARN for cross-account
@@ -501,6 +506,8 @@ runtime:
                                # seen in this long (6h sweep); 0 = manual only
   max_workers: 5               # global cap on concurrently-draining log files
                                # across all instances; 1 = fully serial
+  shard: ""                    # "i/n" → ingest only this process's 1/n of the
+                               # fleet (also `run --shard i/n`); see below
   parallel_reads_per_file: 1   # >1 → read a big backlog in one file with N
                                # concurrent byte-range requests (busy DBs,
                                # catch-up); output identical to sequential
@@ -726,6 +733,46 @@ Add-ons by feature:
 - `s3:HeadBucket` — if you want `validate --deep` to probe the bucket.
 
 ---
+
+## Many databases, one install
+
+Point one rdstail at whole accounts and regions instead of listing databases:
+
+```yaml
+sources:
+  - type: rds
+    regions: [us-east-1, eu-west-1, ap-south-1]
+    discover:
+      all: true                       # every MySQL / MariaDB / PostgreSQL instance
+      exclude_tags: {rdstail: "off"}  # opt individual databases out by tag
+      refresh_interval: 5m            # new databases are picked up, deleted ones dropped
+  - type: rds                         # another account: one more block
+    regions: [us-east-1]
+    assume_role: arn:aws:iam::222222222222:role/rdstail-reader
+    discover: {all: true}
+```
+
+`rdstail discover -c rdstail.yaml` previews exactly what will be ingested.
+Engines are detected per instance, so explicit lists can mix engines too
+(`instances: [orders-mysql, billing-pg]` with no `engine:`).
+
+**Scaling out.** One process handles up to 500 instances; past that, or for
+isolation, run several and split the fleet with `--shard`:
+
+```bash
+rdstail run -c rdstail.yaml --shard 1/3   # host A
+rdstail run -c rdstail.yaml --shard 2/3   # host B
+rdstail run -c rdstail.yaml --shard 3/3   # host C
+```
+
+Every process reads the same config and independently computes the same
+assignment (rendezvous hashing on region + instance ID), so each database is
+tailed by exactly one shard with no coordination. Each shard needs its own
+`state.path`. Changing the shard count moves only ~1/n of the databases; a
+database that moves starts on its new shard per `start_from` (use
+`beginning`, or copy its rows from the old shard's state, to avoid a gap).
+Remember the per-account API budget is shared by all shards (see
+[Capacity planning](#capacity-planning)).
 
 ## Running in production
 

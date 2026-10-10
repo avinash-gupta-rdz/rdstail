@@ -2,6 +2,7 @@ package rds_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -148,5 +149,32 @@ func TestNormalizeEngine(t *testing.T) {
 		if got := rdssrc.NormalizeEngine(in); got != want {
 			t.Errorf("NormalizeEngine(%q)=%q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestDiscoverInstances_AllWithExcludeTags(t *testing.T) {
+	m := &mockDiscoveryAPI{pages: []*awsrds.DescribeDBInstancesOutput{{DBInstances: []rdstypes.DBInstance{
+		db("prod-mysql", "mysql", "available", map[string]string{"env": "prod"}),
+		db("prod-pg", "postgres", "available", nil),
+		db("scratch", "mysql", "available", map[string]string{"rdstail": "off"}),
+		db("tmp-pg", "postgres", "available", map[string]string{"ephemeral": "yes"}),
+		db("oracle-db", "oracle-ee", "available", nil),
+	}}}}
+	got, err := rdssrc.DiscoverInstances(context.Background(), m, rdssrc.DiscoverFilter{
+		All:         true,
+		ExcludeTags: map[string]string{"rdstail": "off", "ephemeral": "*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, d := range got {
+		ids = append(ids, d.ID+"/"+d.Engine)
+	}
+	if strings.Join(ids, ",") != "prod-mysql/mysql,prod-pg/postgres" {
+		t.Fatalf("got %v", ids)
+	}
+	if _, err := rdssrc.DiscoverInstances(context.Background(), m, rdssrc.DiscoverFilter{}); err == nil {
+		t.Fatal("discovery with neither tags nor all must be rejected")
 	}
 }
