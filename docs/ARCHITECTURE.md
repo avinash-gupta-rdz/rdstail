@@ -206,7 +206,7 @@ resetting to 0 re-ships the file. Instead:
   checkpoint it held a minute before the restart (each worker keeps a short
   in-memory history of checkpoints), drops a possibly partial first line, and
   skips records whose hash is in its in-memory ring of recently shipped
-  records (sized to cover ≥ 2× the rewind window). Each restart is counted in
+  records (the last 2 MB per file, at most 50k records). Each restart is counted in
   `rdstail_read_anomalies_total{kind="restart"}`.
 - Lines RDS lost at the restart are gone for every reader. After an rdstail
   restart the ring is empty, so a rewind may re-ship up to 256 KB.
