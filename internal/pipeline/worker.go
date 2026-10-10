@@ -112,8 +112,10 @@ const (
 	rewindBytes = 256 << 10
 	// The dedup memory must cover every byte a rewind can re-read, or lines
 	// older than it ship twice (seen live: a 4096-line ring vs a 512 KB
-	// rewind of a busy general log). Keep 2× the rewind window, bounded.
-	shipRingBytes   = 2 * rewindBytes
+	// rewind of a busy general log). A restart rewind starts from a position
+	// held >= restartMargin before the restart, so a busy file needs the
+	// rewind window plus about a minute of writes: keep 2 MB, bounded.
+	shipRingBytes   = 2 << 20
 	shipRingMaxKeys = 50_000
 )
 
