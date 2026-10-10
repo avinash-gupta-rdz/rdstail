@@ -161,7 +161,12 @@ type Runtime struct {
 	// (default) disables the sweep; `rdstail state gc` remains available.
 	CheckpointRetention time.Duration `koanf:"checkpoint_retention" yaml:"checkpoint_retention,omitempty"`
 
-	MaxWorkers             int           `koanf:"max_workers" yaml:"max_workers"`
+	MaxWorkers int `koanf:"max_workers" yaml:"max_workers"`
+	// ParallelReadsPerFile > 1 reads a large backlog in one log file with that
+	// many concurrent byte-range requests. RDS serves one file at only
+	// ~0.3–0.9 MB/s sequentially; this multiplies it (up to the account's API
+	// rate limit) for very busy databases and catch-up. 1 (default) = off.
+	ParallelReadsPerFile   int           `koanf:"parallel_reads_per_file" yaml:"parallel_reads_per_file,omitempty"`
 	MaxInstancesConcurrent int           `koanf:"max_instances_concurrent" yaml:"max_instances_concurrent"`
 	ShutdownTimeout        time.Duration `koanf:"shutdown_timeout" yaml:"shutdown_timeout"`
 	StartFrom              string        `koanf:"start_from" yaml:"start_from"` // "beginning" | "end"
@@ -386,6 +391,9 @@ func Validate(c *Config) error {
 	}
 	if c.Runtime.CheckpointRetention != 0 && c.Runtime.CheckpointRetention < 24*time.Hour {
 		errs = append(errs, errors.New("runtime.checkpoint_retention: must be >= 24h (or 0 to disable)"))
+	}
+	if c.Runtime.ParallelReadsPerFile < 0 || c.Runtime.ParallelReadsPerFile > 32 {
+		errs = append(errs, errors.New("runtime.parallel_reads_per_file: must be between 1 and 32 (0 or 1 = off)"))
 	}
 	if c.Runtime.MaxWorkers < 1 {
 		errs = append(errs, errors.New("runtime.max_workers: must be >= 1"))

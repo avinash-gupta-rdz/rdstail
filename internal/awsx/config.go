@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -28,7 +29,17 @@ func NewConfig(ctx context.Context, opts Options) (aws.Config, error) {
 	if opts.Region == "" {
 		return aws.Config{}, errors.New("awsx: region is required")
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(opts.Region))
+	// Adaptive retry mode rate-limits on the client side once AWS starts
+	// throttling, so a busy rdstail backs off instead of burning its retry
+	// quota; more attempts ride out short throttling bursts.
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(opts.Region),
+		awsconfig.WithRetryer(func() aws.Retryer {
+			return retry.NewAdaptiveMode(func(o *retry.AdaptiveModeOptions) {
+				o.StandardOptions = append(o.StandardOptions, func(so *retry.StandardOptions) {
+					so.MaxAttempts = 6
+				})
+			})
+		}))
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("load default config: %w", err)
 	}

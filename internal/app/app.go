@@ -172,6 +172,7 @@ func Run(ctx context.Context, cfg *config.Config, lg *slog.Logger) error {
 		LagGauge:        mx.IngestionLagSeconds,
 		PollGauge:       mx.PollIntervalSeconds,
 		StateOpsCounter: mx.StateStoreOpsTotal,
+		AnomalyCounter:  mx.ReadAnomaliesTotal,
 		APICallsCounter: mx.APICallsTotal,
 	})
 	if err != nil {

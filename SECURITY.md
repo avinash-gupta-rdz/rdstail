@@ -7,7 +7,7 @@ Only the latest release (and `main`) receives security fixes.
 ## Reporting a vulnerability
 
 If you believe you've found a security vulnerability in rdstail, please
-email **mine2technology@gmail.com** instead of opening a public issue.
+email **atechnodrifter@gmail.com** instead of opening a public issue.
 Include:
 
 - A description of the issue and its impact.

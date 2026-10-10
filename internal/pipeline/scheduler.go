@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/smithy-go"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/avinash-gupta-rdz/rdstail/internal/config"
@@ -40,6 +41,7 @@ type Scheduler struct {
 	lagGauge        *prometheus.GaugeVec
 	pollGauge       *prometheus.GaugeVec
 	stateOpsCounter *prometheus.CounterVec
+	anomalyCounter  *prometheus.CounterVec
 	apiCallsCounter *prometheus.CounterVec
 
 	shutdownTimeout time.Duration
@@ -60,6 +62,7 @@ type SchedulerOpts struct {
 	LagGauge        *prometheus.GaugeVec
 	PollGauge       *prometheus.GaugeVec
 	StateOpsCounter *prometheus.CounterVec
+	AnomalyCounter  *prometheus.CounterVec
 	APICallsCounter *prometheus.CounterVec
 }
 
@@ -88,6 +91,7 @@ func NewScheduler(opts SchedulerOpts) (*Scheduler, error) {
 		lagGauge:        opts.LagGauge,
 		pollGauge:       opts.PollGauge,
 		stateOpsCounter: opts.StateOpsCounter,
+		anomalyCounter:  opts.AnomalyCounter,
 		apiCallsCounter: opts.APICallsCounter,
 		shutdownTimeout: opts.Config.Runtime.ShutdownTimeout,
 	}, nil
@@ -136,9 +140,25 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	var (
 		wg      sync.WaitGroup
-		mu      sync.Mutex // guards running
+		mu      sync.Mutex // guards running, workers, watchers
 		running = map[string]context.CancelFunc{}
+		workers = map[string]*InstanceWorker{}
+		watched = map[rdssrc.EventsAPI]bool{}
 	)
+
+	// One restart/failover watcher per RDS client (region + credentials):
+	// a single DescribeEvents call per minute covers every instance in it.
+	watch := func(region string, api rdssrc.EventsAPI) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.watchRestarts(ctx, region, api, func(id string) *InstanceWorker {
+				mu.Lock()
+				defer mu.Unlock()
+				return workers[region+"|"+id]
+			})
+		}()
+	}
 
 	start := func(inst InstanceSpec) error {
 		var observer rdssrc.APICallObserver
@@ -168,11 +188,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			PollMultiplier:  s.cfg.Runtime.PollBackoffMultiplier,
 			MaxBatchBytes:   s.cfg.Runtime.MaxBatchBytes,
 			MaxBatchRecords: s.cfg.Runtime.MaxBatchRecords,
+			ParallelReads:   s.cfg.Runtime.ParallelReadsPerFile,
 			DrainSem:        drainSem,
 			StartFrom:       s.cfg.Runtime.StartFrom,
 			LagGauge:        s.lagGauge,
 			PollGauge:       s.pollGauge,
 			StateOpsCounter: s.stateOpsCounter,
+			AnomalyCounter:  s.anomalyCounter,
 		})
 		if err != nil {
 			return fmt.Errorf("build worker for %s: %w", inst.InstanceID, err)
@@ -181,7 +203,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		wctx, cancel := context.WithCancel(ctx)
 		mu.Lock()
 		running[key] = cancel
+		workers[key] = worker
+		ev, hasEvents := inst.API.(rdssrc.EventsAPI)
+		startWatch := hasEvents && !watched[ev]
+		if startWatch {
+			watched[ev] = true
+		}
 		mu.Unlock()
+		if startWatch {
+			watch(inst.Region, ev)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -189,6 +220,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				cancel()
 				mu.Lock()
 				delete(running, key)
+				delete(workers, key)
 				mu.Unlock()
 			}()
 			sem <- struct{}{}
@@ -262,4 +294,60 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.log.Warn("scheduler: shutdown timeout reached; some workers may still be running")
 	}
 	return nil
+}
+
+// restartPollInterval is how often RDS events are checked for reboots and
+// failovers; restartLookback re-reads a window so late-published events are
+// not missed (duplicates are filtered).
+const (
+	restartPollInterval = time.Minute
+	restartLookback     = 5 * time.Minute
+)
+
+// watchRestarts polls RDS events for reboots/Multi-AZ failovers and tells
+// the affected instance's worker, which then re-verifies its log positions.
+// Without rds:DescribeEvents permission it logs once and stops; workers still
+// detect restarts from server start banners and shrunken files.
+func (s *Scheduler) watchRestarts(ctx context.Context, region string, api rdssrc.EventsAPI, lookup func(string) *InstanceWorker) {
+	seen := map[string]time.Time{}
+	since := time.Now().Add(-restartLookback)
+	tick := time.NewTicker(restartPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		now := time.Now()
+		events, err := rdssrc.PollRestartEvents(ctx, api, since, now)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			var ae smithy.APIError
+			if errors.As(err, &ae) && (ae.ErrorCode() == "AccessDenied" || ae.ErrorCode() == "AccessDeniedException") {
+				s.log.Warn("no rds:DescribeEvents permission; reboot/failover detection falls back to log banners", "region", region)
+				return
+			}
+			s.log.Warn("restart event poll failed", "region", region, "err", err)
+			continue
+		}
+		for _, e := range events {
+			key := e.InstanceID + "|" + e.At.String()
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = now
+			if w := lookup(e.InstanceID); w != nil {
+				w.NotifyRestart(e.At, "RDS event: "+e.Message)
+			}
+		}
+		for k, t := range seen {
+			if now.Sub(t) > 2*restartLookback {
+				delete(seen, k)
+			}
+		}
+		since = now.Add(-restartLookback)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,7 +128,7 @@ func TestPullPortion_ParsesLinesAndAssignsBatchID(t *testing.T) {
 		},
 	}
 	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{
-		API: m, InstanceID: "db-1", Engine: "postgres", Clock: newFixedClock(fixed),
+		API: m, InstanceID: "db-1", Clock: newFixedClock(fixed),
 	})
 
 	chunk, err := f.PullPortion(context.Background(), "error/postgresql.log", "")
@@ -192,7 +193,7 @@ func TestSkipToEnd_LoopsUntilNoPending(t *testing.T) {
 		},
 	}
 	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: m, InstanceID: "db", Engine: "postgres"})
-	tail, err := f.SkipToEnd(context.Background(), "f")
+	tail, err := f.SkipToEnd(context.Background(), "f", 0) // opaque markers: pages through
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +202,25 @@ func TestSkipToEnd_LoopsUntilNoPending(t *testing.T) {
 	}
 	if len(m.downloadCalls) != 3 {
 		t.Fatalf("expected 3 download calls, got %d", len(m.downloadCalls))
+	}
+}
+
+// RDS markers are "<prefix>:<offset>": the tail is built from the file size
+// and confirmed in one call, never by downloading a 183 MB file (seen live).
+func TestSkipToEnd_BuildsTailMarkerFromSize(t *testing.T) {
+	m := &mockAPI{
+		downloadResponses: map[string]*awsrds.DownloadDBLogFilePortionOutput{
+			"f|0":            {Marker: aws.String("10:120"), AdditionalDataPending: aws.Bool(true), LogFileData: aws.String("first line\n")},
+			"f|10:182988204": {Marker: aws.String("10:182988204"), AdditionalDataPending: aws.Bool(false)},
+		},
+	}
+	f, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: m, InstanceID: "db", Engine: "postgres"})
+	tail, err := f.SkipToEnd(context.Background(), "f", 182988204)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail != "10:182988204" || len(m.downloadCalls) != 2 {
+		t.Fatalf("tail=%q calls=%d, want 10:182988204 in 2 calls", tail, len(m.downloadCalls))
 	}
 }
 
@@ -258,20 +278,20 @@ func TestPullPortion_ExtractsTimestampAndSeverity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chunk.Records) != 3 {
-		t.Fatalf("expected 3 records, got %d", len(chunk.Records))
+	// The unprefixed continuation line joins the entry before it.
+	if len(chunk.Records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(chunk.Records))
 	}
 	r := chunk.Records
 	wantTS := time.Date(2026, 7, 21, 10, 15, 32, 0, time.UTC)
 	if r[0].Severity != "ERROR" || !r[0].Timestamp.Equal(wantTS) {
 		t.Fatalf("record 0: severity=%q ts=%v, want ERROR %v", r[0].Severity, r[0].Timestamp, wantTS)
 	}
-	// Continuation line: no severity, inherits the previous line's timestamp.
-	if r[1].Severity != "" || !r[1].Timestamp.Equal(wantTS) {
-		t.Fatalf("record 1 (continuation): severity=%q ts=%v, want inherited %v", r[1].Severity, r[1].Timestamp, wantTS)
+	if !strings.HasSuffix(r[0].Message, "does not exist\n\tat character 15 raw continuation") {
+		t.Fatalf("record 0 should carry its continuation line: %q", r[0].Message)
 	}
-	if r[2].Severity != "LOG" || !r[2].Timestamp.Equal(time.Date(2026, 7, 21, 10, 15, 34, 0, time.UTC)) {
-		t.Fatalf("record 2: %+v", r[2])
+	if r[1].Severity != "LOG" || !r[1].Timestamp.Equal(time.Date(2026, 7, 21, 10, 15, 34, 0, time.UTC)) {
+		t.Fatalf("record 1: %+v", r[1])
 	}
 }
 

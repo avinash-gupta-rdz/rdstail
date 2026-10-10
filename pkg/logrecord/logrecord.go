@@ -5,7 +5,9 @@ package logrecord
 
 import "time"
 
-// LogRecord is a single parsed log line pulled from an RDS log file.
+// LogRecord is a single log entry pulled from an RDS log file — one line, or
+// a multi-line entry (slow-query block, multi-line SQL, stack trace) joined
+// with newlines.
 //
 // Marker is the AWS-opaque pagination token for the chunk that contains this
 // record; it is not a byte offset (see plan §5). BatchID is a deterministic
@@ -15,7 +17,10 @@ import "time"
 // be parsed from the line (or inherited from the nearest preceding timestamped
 // line in the same chunk), else the fetch time. Severity is the engine's
 // upper-cased level token (ERROR, WARNING, FATAL, NOTE, ...) when present on
-// the line, else empty. Message is always the raw, unmodified line.
+// the line, else empty. Message is always the raw, unmodified text.
+//
+// Truncated is set when RDS cut the entry at its 1 MB per-response limit (a
+// single line larger than 1 MB); Message then holds only the first ~1 MB.
 type LogRecord struct {
 	InstanceID string    `json:"instance_id"`
 	Engine     string    `json:"engine"`
@@ -26,6 +31,7 @@ type LogRecord struct {
 	Marker     string    `json:"marker,omitempty"`
 	BatchID    string    `json:"batch_id,omitempty"`
 	Audit      *Audit    `json:"audit,omitempty"`
+	Truncated  bool      `json:"truncated,omitempty"`
 }
 
 // Audit carries the fields pgAudit structures into its CSV payload

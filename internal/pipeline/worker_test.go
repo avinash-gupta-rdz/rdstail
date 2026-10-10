@@ -91,7 +91,7 @@ func TestWorker_NewFile_StartFromEnd_SkipsAndCheckpoints(t *testing.T) {
 			"error/postgresql.log|0": {Marker: aws.String("tail-x"), AdditionalDataPending: aws.Bool(false), LogFileData: aws.String("old\n")},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 
@@ -124,7 +124,7 @@ func TestWorker_ExistingCheckpoint_PaginatesAndDelivers(t *testing.T) {
 			"error/postgresql.log|m1": {LogFileData: aws.String("c\n"), Marker: aws.String("m2"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	// Pre-seed checkpoint so worker skips the new-file path.
@@ -167,7 +167,7 @@ func TestWorker_TruncationResetsMarker(t *testing.T) {
 			fname + "|0": {LogFileData: aws.String("fresh\n"), Marker: aws.String("mNew"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	_ = store.Set(context.Background(), "db-1", fname, state.Checkpoint{Marker: "oldBig", FileSize: 5000})
@@ -196,7 +196,7 @@ func TestWorker_SinkFailureLeavesCheckpointUnchanged(t *testing.T) {
 			fname + "|m0": {LogFileData: aws.String("x\n"), Marker: aws.String("m1"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	sink.FailNext(memory.ErrForced)
 	store := newFileStore(t)
@@ -223,7 +223,7 @@ func TestWorker_AdaptivePolling_BacksOffWhenIdle(t *testing.T) {
 	api := &scriptedAPI{
 		describeResponses: []*awsrds.DescribeDBLogFilesOutput{describeOne("error/postgresql.log", 1000)},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	if err := store.Set(context.Background(), "db-1", "error/postgresql.log",
@@ -266,7 +266,7 @@ func TestWorker_CrossChunkBatching_CoalescesIntoOneWrite(t *testing.T) {
 			fname + "|m2": {LogFileData: aws.String("e\n"), Marker: aws.String("m3"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	_ = store.Set(context.Background(), "db-1", fname, state.Checkpoint{Marker: "m0", FileSize: 1000})
@@ -303,7 +303,7 @@ func TestWorker_CrossChunkBatching_RecordThresholdFlushesMidPagination(t *testin
 			fname + "|m2": {LogFileData: aws.String("e\n"), Marker: aws.String("m3"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	_ = store.Set(context.Background(), "db-1", fname, state.Checkpoint{Marker: "m0", FileSize: 1000})
@@ -337,7 +337,7 @@ func TestWorker_CrossChunkBatching_MidBatchSinkFailureKeepsLastFlushedCheckpoint
 			fname + "|m1": {LogFileData: aws.String("c\n"), Marker: aws.String("m2"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	_ = store.Set(context.Background(), "db-1", fname, state.Checkpoint{Marker: "m0", FileSize: 1000})
@@ -397,7 +397,7 @@ func TestWorker_ParallelFileDrain_AllFilesCheckpointed(t *testing.T) {
 		describeResponses: []*awsrds.DescribeDBLogFilesOutput{{DescribeDBLogFiles: details}},
 		downloadByKey:     downloads,
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "mysql"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 	for _, f := range files {
@@ -444,7 +444,7 @@ func TestWorker_MinFileTime_SkipsStaleFiles(t *testing.T) {
 			fresh + "|0": {LogFileData: aws.String("fresh-line\n"), Marker: aws.String("f1"), AdditionalDataPending: aws.Bool(false)},
 		},
 	}
-	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1", Engine: "postgres"})
+	fetcher, _ := rdssrc.NewFetcher(rdssrc.FetcherOpts{API: api, InstanceID: "db-1"}) // raw engine: one record per line
 	sink := memory.New("mem")
 	store := newFileStore(t)
 

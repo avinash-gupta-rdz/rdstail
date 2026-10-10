@@ -501,9 +501,14 @@ runtime:
                                # seen in this long (6h sweep); 0 = manual only
   max_workers: 5               # global cap on concurrently-draining log files
                                # across all instances; 1 = fully serial
+  parallel_reads_per_file: 1   # >1 → read a big backlog in one file with N
+                               # concurrent byte-range requests (busy DBs,
+                               # catch-up); output identical to sequential
   max_instances_concurrent: 0  # 0 → min(len(instances), hard cap)
   shutdown_timeout: 30s
-  start_from: end              # end | beginning
+  start_from: end              # end | beginning — applies to files present the
+                               # first time an instance is seen; later files
+                               # always start at their first line
   memory_budget_bytes: 268435456  # 256 MiB
 
 metrics:
@@ -571,8 +576,23 @@ to dedupe — you can upgrade to exactly-once-at-consumer with a single
 `SELECT DISTINCT ON (batch_id)` (SQL) or a Kafka Streams dedupe.
 
 > **Note on the checkpoint token:** AWS's `DownloadDBLogFilePortion` `Marker`
-> is an opaque string, not a byte offset. rdstail stores it verbatim and
-> tracks bytes separately for rotation heuristics only.
+> is an opaque string. rdstail stores it verbatim; the one exception is the
+> MySQL/MariaDB `YYYY-MM-DD.H:offset` form, whose hour ID drives explicit
+> rotation handling (below).
+
+### RDS log API behaviour rdstail handles
+
+Verified against live RDS MySQL 8.4 and PostgreSQL 16:
+
+| RDS behaviour | What rdstail does |
+|---|---|
+| A response is capped at 1 MB; a line crossing the cap is cut and the marker skips its remainder | Re-fetches the chunk limited to the whole lines; a single line > 1 MB ships with `truncated: true` |
+| MySQL rotates general/slow/error-running logs hourly by renaming to `*.log.YYYY-MM-DD.H`; the marker chain survives one rotation and **sticks forever after two** | Hands the checkpoint to the rotated file, reads later hours from the start, never re-reads an hour |
+| A marker for a purged hour silently reads the live file at that offset | Reports a `gap` anomaly, reads every retained hour |
+| `mysql-error.log` is copied into `mysql-error-running.log` every ~5 min, then truncated | Ships the realtime file; the running log contributes only lines not already shipped |
+| PostgreSQL opens a new file every hour | New files are always read from their first line |
+| A reboot or Multi-AZ failover loses the last few KB of every log file; the server appends from the shorter end | Detects the restart (RDS events + server start banner), re-reads each file from just before it, drops lines already shipped — no line RDS kept is missed |
+| One file can be read at only ~0.3–0.9 MB/s — the API is serial per file | `runtime.parallel_reads_per_file` reads byte ranges concurrently; see [Capacity planning](#capacity-planning) |
 
 ---
 
@@ -622,6 +642,7 @@ All collectors are prefixed `rdstail_`:
 | `batch_bytes` | histogram | `sink_type` |
 | `sink_write_duration_seconds` | histogram | `sink_type` |
 | `state_store_ops_total` | counter | `op, outcome` |
+| `read_anomalies_total` | counter | `instance, kind` (`gap`, `stall`, `truncated_line`, `restart`) — alert on any increase |
 
 Cardinality is bounded: `log_file` is the basename-only, capped at 64 chars,
 and configs with >500 instances are rejected by default.
@@ -678,6 +699,7 @@ account):
       "Effect": "Allow",
       "Action": [
         "rds:DescribeDBInstances",
+        "rds:DescribeEvents",
         "rds:DescribeDBLogFiles",
         "rds:DownloadDBLogFilePortion"
       ],
@@ -748,11 +770,31 @@ reading the same RDS instance will duplicate work).
 
 ### Capacity planning
 
-A single rdstail instance comfortably handles ~100 RDS instances polled
-every 10 s. Per-instance cost in AWS API calls is roughly
-`ceil(new_log_bytes / 1 MB)` + 1 describe per poll. Set `max_workers` to
-saturate your sink throughput — the default of 5 is fine for S3/webhook;
-bump to 16+ for Kafka if you have the brokers to absorb it.
+Two RDS-side limits bound every tool that reads logs through the RDS API —
+measured against live RDS MySQL 8.4 / PostgreSQL 16 in us-east-1:
+
+| Limit | Measured | What it means |
+|---|---|---|
+| **Per log file** | 0.3–0.9 MB/s (≈ 20–50 MB/min), depending on content; the API is sequential per file | A single file growing faster than this (e.g. `general_log` or `log_statement=all` at thousands of queries/s) cannot be tailed in realtime — lag grows until the burst ends. Error and slow-query logs are far below it. Watch `rdstail_ingestion_lag_seconds`. |
+| **Per account + region** | ≈ 14 successful log-API calls/s sustained, shared by everything calling the RDS API in that account/region | Throttling starts beyond it; rdstail backs off (adaptive client rate limiting + jittered poll backoff) without losing data, but latency rises. |
+
+Each poll costs one `DescribeDBLogFiles` per instance plus one
+`DownloadDBLogFilePortion` per file with new data (plus one per extra MB).
+A MySQL instance with error + slow + general logs active is ≈ 4 calls per
+poll; PostgreSQL ≈ 2. Rough fleet sizes per account + region before
+throttling:
+
+| `poll_interval` | MySQL instances | PostgreSQL instances |
+|---|---|---|
+| 5 s | ~15 | ~30 |
+| 30 s | ~100 | ~200 |
+| 60 s | ~200 | ~400 |
+
+Bigger fleets: lengthen `poll_interval`, enable adaptive polling
+(`poll_interval_max`) so idle instances poll rarely, or split instances
+across accounts/regions. Measured end-to-end latency at `poll_interval: 5s`
+is p50 ≈ 3.5 s, p95 ≈ 6–8 s when the API isn't throttled.
+`max_workers` bounds concurrent file drains; the default of 5 is fine.
 
 ---
 
@@ -835,7 +877,7 @@ Contributions are welcome. Please:
 ## Security
 
 If you believe you've found a security vulnerability, please email
-**mine2technology@gmail.com** instead of opening a public issue. Disclosure
+**atechnodrifter@gmail.com** instead of opening a public issue. Disclosure
 timeline is 90 days.
 
 rdstail never logs the contents of AWS credentials or RDS log lines at levels

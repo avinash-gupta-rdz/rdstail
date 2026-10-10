@@ -49,7 +49,7 @@ func Generate(cfg *config.Config, opts Options) (Policy, []string) {
 		if src.AssumeRole != "" {
 			assumeRoles[src.AssumeRole] = struct{}{}
 			notes = append(notes, fmt.Sprintf(
-				"source (region %s) assumes role %s — this policy only grants sts:AssumeRole on it; the role itself needs rds:DescribeDBInstances, rds:DescribeDBLogFiles, and rds:DownloadDBLogFilePortion",
+				"source (region %s) assumes role %s — this policy only grants sts:AssumeRole on it; the role itself needs rds:DescribeDBInstances, rds:DescribeEvents, rds:DescribeDBLogFiles, and rds:DownloadDBLogFilePortion",
 				src.Region, src.AssumeRole))
 			continue
 		}
@@ -77,10 +77,12 @@ func Generate(cfg *config.Config, opts Options) (Policy, []string) {
 		// DescribeDBInstances has no useful resource scoping for discovery
 		// (the tag filter is applied after listing) and is also used by
 		// `tail` and `validate --deep` for engine auto-detection.
+		// DescribeEvents (reboot/failover detection) is likewise unscoped:
+		// one call per region lists events for every instance.
 		stmts = append(stmts, Statement{
 			Sid:      "RDSDescribeInstances",
 			Effect:   "Allow",
-			Action:   []string{"rds:DescribeDBInstances"},
+			Action:   []string{"rds:DescribeDBInstances", "rds:DescribeEvents"},
 			Resource: []string{"*"},
 		})
 		stmts = append(stmts, Statement{

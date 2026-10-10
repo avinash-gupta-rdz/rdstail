@@ -20,6 +20,7 @@ type Metrics struct {
 	SinkWriteDurationSec *prometheus.HistogramVec
 	StateStoreOpsTotal   *prometheus.CounterVec
 	DLQDepth             *prometheus.GaugeVec
+	ReadAnomaliesTotal   *prometheus.CounterVec
 }
 
 // New builds a fresh Metrics with all collectors registered on a private Registry.
@@ -74,6 +75,11 @@ func New() *Metrics {
 		Help: "Dead-lettered batches currently parked, per sink. Nonzero means data is waiting for `rdstail dlq replay` — alert on growth.",
 	}, []string{"sink_name"})
 
+	m.ReadAnomaliesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rdstail_read_anomalies_total",
+		Help: "Source-side events that mean log data may be missing or delayed: gap (RDS purged log hours before they were read), stall (file grows but its marker does not advance), truncated_line (a single line over RDS's 1 MB response cap was cut). Alert on any increase.",
+	}, []string{"instance", "kind"})
+
 	r.MustRegister(
 		m.LogsProcessedTotal,
 		m.LogsFailedTotal,
@@ -84,6 +90,7 @@ func New() *Metrics {
 		m.SinkWriteDurationSec,
 		m.StateStoreOpsTotal,
 		m.DLQDepth,
+		m.ReadAnomaliesTotal,
 	)
 	return m
 }

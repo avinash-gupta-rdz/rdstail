@@ -243,3 +243,47 @@ func TestGCCheckpoints_PrunesOnlyStaleRows(t *testing.T) {
 		t.Fatal("fresh row must survive")
 	}
 }
+
+// A state.db written by schema v1 (no skip_continuation column) must open,
+// keep its checkpoints, and round-trip the new field.
+func TestMigrate_V1ToV2_KeepsCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	p := filepath.Join(t.TempDir(), "state.db")
+	s, err := sqlitestore.Open(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := s.DB()
+	for _, q := range []string{
+		`DROP TABLE checkpoints`,
+		`CREATE TABLE checkpoints (instance_id TEXT NOT NULL, log_file TEXT NOT NULL, marker TEXT NOT NULL,
+		 bytes_written INTEGER NOT NULL DEFAULT 0, file_size INTEGER NOT NULL DEFAULT 0,
+		 last_written INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (instance_id, log_file))`,
+		`INSERT INTO checkpoints VALUES ('db-1','general/mysql-general.log','2026-10-10.7:185849',0,185849,0,1)`,
+		`DELETE FROM schema_version`,
+		`INSERT INTO schema_version(version) VALUES (1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = s.Close()
+
+	s, err = sqlitestore.Open(ctx, p)
+	if err != nil {
+		t.Fatalf("reopen v1 db: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	got, ok, err := s.Get(ctx, "db-1", "general/mysql-general.log")
+	if err != nil || !ok || got.Marker != "2026-10-10.7:185849" || got.SkipContinuation {
+		t.Fatalf("v1 checkpoint not preserved: %+v ok=%v err=%v", got, ok, err)
+	}
+	got.SkipContinuation = true
+	if err := s.Set(ctx, "db-1", "general/mysql-general.log", got); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.Get(ctx, "db-1", "general/mysql-general.log")
+	if !got.SkipContinuation {
+		t.Fatal("skip_continuation not persisted")
+	}
+}
