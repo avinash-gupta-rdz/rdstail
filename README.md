@@ -10,6 +10,13 @@
 [![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
 [![Status](https://img.shields.io/badge/status-beta-orange.svg)](#status)
 
+<p align="center">
+  <img src="docs/assets/rdstail-demo.gif" alt="rdstail discovering a MySQL and a PostgreSQL RDS instance from a six-line config, then live-tailing their errors and slow queries" width="900">
+  <br>
+  <sub>One config discovers every database in the region; <code>rdstail tail</code> streams errors and slow queries from both live.
+  Real output from live RDS instances (<a href="docs/assets/rdstail-demo.mp4">MP4</a>).</sub>
+</p>
+
 ---
 
 ## The problem
