@@ -285,15 +285,28 @@ func TestWorker_MySQLErrorLog_NotShippedTwice(t *testing.T) {
 	w, _ := pipeline.NewInstanceWorker(pipeline.InstanceWorkerOpts{
 		Fetcher: fetcher, Store: store, Sink: sink, PollInterval: time.Hour, DrainSem: make(chan struct{}, 4),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Wait for the running-log phase rather than a fixed budget: a starved
+	// -race runner can take several hundred ms to reach it. A duplicate
+	// realtime line would ship in the same batch as the running-only line.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = w.Run(ctx)
+	done := make(chan struct{})
+	go func() { _ = w.Run(ctx); close(done) }()
 	var got []string
-	for _, b := range sink.Batches() {
-		for _, r := range b {
-			got = append(got, r.LogFile+": "+r.Message[strings.LastIndexByte(r.Message, ' ')+1:])
+	for ctx.Err() == nil {
+		got = got[:0]
+		for _, b := range sink.Batches() {
+			for _, r := range b {
+				got = append(got, r.LogFile+": "+r.Message[strings.LastIndexByte(r.Message, ' ')+1:])
+			}
 		}
+		if slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, running) }) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	cancel()
+	<-done
 	slices.Sort(got)
 	want := []string{running + ": only-in-running", errLog + ": seen-in-realtime"}
 	if !slices.Equal(got, want) {
